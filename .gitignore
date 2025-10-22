@@ -4,6 +4,7 @@
 *.obs
 *.ini
 *.local
+.idea
 Release
 Release_Build
 Debug

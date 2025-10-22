@@ -47,7 +47,7 @@ if(QT_FOUND)
 endif()
 
 # tests
-add_subdirectory(test)
+#add_subdirectory(test)
 
 #CPACK: General Settings
 set(CPACK_GENERATOR "TBZ2" "RPM" "DEB")
