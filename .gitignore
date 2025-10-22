@@ -5,6 +5,7 @@
 *.ini
 *.local
 .idea
+.vscode
 Release
 Release_Build
 Debug
@@ -13,6 +14,7 @@ __history
 __astcache
 
 # CMake files
+cmake-build-*
 CMakeLists.txt.user
 _deps
 CMakeUserPresets.json
@@ -22,7 +24,6 @@ CMakeUserPresets.json
 **/install_manifest.txt
 **/CMakeFiles/
 **/CTestTestfile.cmake
-**/Makefile
 **/*.cbp
 **/CMakeScripts
 **/compile_commands.json

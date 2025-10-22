@@ -185,9 +185,9 @@ static int conv_rtcm_obs_only(const int *type, int n, const char *rtcmopt, const
 int main(void) {
   // =====================参数=====================
   // 若设为空字符串，则直接退出
-  const char *infile = "../test/data/rinex/WUHN.25o";
+  const char *infile = "../test/data/rinex/XZDJ.25o";
   // 以下参数可选
-  const char *outfile = "./output/WUHN.rtcm3";// 若设为空字符串，则输出到 stdout
+  const char *outfile = "./output/XZDJ.rtcm3";// 若设为空字符串，则输出到 stdout
   const int staid = 1;                        // RTCM 参考站 ID（整数）
   const char *sta_name = "test";              // 站点名称（写入 sta_t 结构体）
   double es[6] = {0};                         // 起始时间（年-月-日-时-分-秒，留 0 则不限制）
