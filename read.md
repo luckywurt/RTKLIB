@@ -14,5 +14,5 @@ convbin input.rtcm3 -o output.obs -od -os
 ```
 
 ```shell
-./str2str -in /root/clion-remote/RTKLIB-rtklibexplore/bin/output/WUHN.rtcm3#rtcm3 -out tcpsvr://:2101
+./str2str -in file:///root/clion-remote/RTKLIB-rtklibexplore/bin/output/XZDJ.rtcm3::T::x1 -out tcpsvr://:2101
 ```

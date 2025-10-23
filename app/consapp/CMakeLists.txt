@@ -25,8 +25,11 @@ if (UNIX)
 
   add_executable(rnx2rtcm rnx2rtcm/rnx2rtcm.c)
   target_link_libraries(rnx2rtcm rtklib)
-  target_compile_definitions(rnx2rtcm PRIVATE TRACE ENAGLO ENAQZS ENAGAL ENACMP ENAIRN NFREQ=4 NEXOBS=3)
   install(TARGETS rnx2rtcm RUNTIME DESTINATION bin)
+
+  add_executable(rnx2str rnx2str/rnx2str.c)
+  target_link_libraries(rnx2str rtklib)
+  install(TARGETS rnx2str RUNTIME DESTINATION bin)
 endif()
 
 # add additional libraries to compile on windows
