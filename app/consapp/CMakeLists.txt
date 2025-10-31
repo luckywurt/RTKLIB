@@ -30,6 +30,10 @@ if (UNIX)
   add_executable(rnx2str rnx2str/rnx2str.c)
   target_link_libraries(rnx2str rtklib)
   install(TARGETS rnx2str RUNTIME DESTINATION bin)
+
+  add_executable(rtpos rtpos/rtpos.c rtpos/vt.c)
+    target_link_libraries(rtpos rtklib)
+    install(TARGETS rtpos RUNTIME DESTINATION bin)
 endif()
 
 # add additional libraries to compile on windows
