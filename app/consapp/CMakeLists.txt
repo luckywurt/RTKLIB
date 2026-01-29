@@ -13,6 +13,14 @@ add_executable(pos2kml pos2kml/pos2kml.c)
 target_link_libraries(pos2kml rtklib)
 install(TARGETS pos2kml RUNTIME DESTINATION bin)
 
+add_executable(rnx2rtcm rnx2rtcm/rnx2rtcm.c)
+target_link_libraries(rnx2rtcm rtklib)
+install(TARGETS rnx2rtcm RUNTIME DESTINATION bin)
+
+add_executable(rnx2str rnx2str/rnx2str.c)
+target_link_libraries(rnx2str rtklib)
+install(TARGETS rnx2str RUNTIME DESTINATION bin)
+
 # add executables only supported on unix-like systems
 if (UNIX)
   add_executable(rtkrcv rtkrcv/rtkrcv.c rtkrcv/vt.c)
@@ -23,17 +31,18 @@ if (UNIX)
   target_link_libraries(str2str rtklib)
   install(TARGETS str2str RUNTIME DESTINATION bin)
 
-  add_executable(rnx2rtcm rnx2rtcm/rnx2rtcm.c)
-  target_link_libraries(rnx2rtcm rtklib)
-  install(TARGETS rnx2rtcm RUNTIME DESTINATION bin)
-
-  add_executable(rnx2str rnx2str/rnx2str.c)
-  target_link_libraries(rnx2str rtklib)
-  install(TARGETS rnx2str RUNTIME DESTINATION bin)
-
   add_executable(rtpos rtpos/rtpos.c rtpos/vt.c)
     target_link_libraries(rtpos rtklib)
     install(TARGETS rtpos RUNTIME DESTINATION bin)
+
+  add_executable(rtphone rtphone/rtphone.cpp)
+  target_link_libraries(rtphone rtklib)
+  install(TARGETS rtphone RUNTIME DESTINATION bin)
+
+  add_executable(str2str2 str2str2/str2str2.c)
+  target_link_libraries(str2str2 rtklib)
+  install(TARGETS str2str2 RUNTIME DESTINATION bin)
+
 endif()
 
 # add additional libraries to compile on windows

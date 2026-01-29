@@ -86,3 +86,48 @@ if (UNIX)
    install(FILES rtknavi_qt.desktop DESTINATION ${XDG_APPS_INSTALL_DIR})
    install(FILES ../icon/rtknavi.png DESTINATION ${XDG_APPS_PIXMAPS_DIR})
 endif()
+
+if(WIN32)
+    # 复制运行库：librtklib.dll
+    set(_rtklib_runtime_dll "${CMAKE_SOURCE_DIR}/lib/librtklib.dll")
+    if(EXISTS "${_rtklib_runtime_dll}")
+        add_custom_command(TARGET rtknavi_qt POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_rtklib_runtime_dll}"
+                "$<TARGET_FILE_DIR:rtknavi_qt>"
+                COMMENT "Copy librtklib.dll next to rtknavi_qt.exe"
+                VERBATIM
+        )
+    else()
+        message(WARNING "librtklib.dll not found at: ${_rtklib_runtime_dll}")
+    endif()
+
+    # 用 windeployqt 部署最小 Qt 运行时
+    if(TARGET Qt6::qmake)
+        get_target_property(_qmake_exe Qt6::qmake IMPORTED_LOCATION)
+    elseif(TARGET Qt5::qmake)
+        get_target_property(_qmake_exe Qt5::qmake IMPORTED_LOCATION)
+    else()
+        message(FATAL_ERROR "Qt qmake target not found. Ensure find_package(Qt5/Qt6 ...) was called.")
+    endif()
+
+    get_filename_component(_qt_bin_dir "${_qmake_exe}" DIRECTORY)
+    find_program(WINDEPLOYQT_EXECUTABLE windeployqt HINTS "${_qt_bin_dir}" REQUIRED)
+
+    # MinGW runtime（libstdc++/libgcc/libwinpthread 等）需要编译器 bin 在 PATH
+    get_filename_component(_toolchain_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+
+    add_custom_command(TARGET rtknavi_qt POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E env
+            "PATH=${_qt_bin_dir};${_toolchain_bin};$ENV{PATH}"
+            "${WINDEPLOYQT_EXECUTABLE}"
+            --no-translations
+            --compiler-runtime
+            --no-angle
+            --no-opengl-sw
+            "$<TARGET_FILE:rtknavi_qt>"
+            COMMENT "Deploy minimal Qt runtime for rtknavi_qt.exe"
+            VERBATIM
+    )
+endif()
+
