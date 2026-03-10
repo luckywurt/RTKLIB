@@ -30,6 +30,9 @@
 *-----------------------------------------------------------------------------*/
 #ifndef RTKLIB_H
 #define RTKLIB_H
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -203,7 +206,7 @@ extern "C" {
 #endif
 #ifdef ENACMP
 #define MINPRNCMP   1                   /* min satellite sat number of BeiDou */
-#define MAXPRNCMP   46                  /* max satellite sat number of BeiDou */
+#define MAXPRNCMP   50                  /* max satellite sat number of BeiDou */
 #define NSATCMP     (MAXPRNCMP-MINPRNCMP+1) /* number of BeiDou satellites */
 #define NSYSCMP     1
 #else
@@ -982,6 +985,9 @@ typedef struct {        /* RTCM control struct type */
     uint32_t nmsg2[100]; /* message count of RTCM 2 (1-99:1-99,0:other) */
     uint32_t nmsg3[400]; /* message count of RTCM 3 (1-299:1001-1299,300-329:4070-4099,0:other) */
     char opt[256];      /* RTCM dependent options */
+    int nmsg;           /* number of output messages */
+    int msgs[32];       /* output message types */
+    double tint[32];    /* output message intervals (s) */
 } rtcm_t;
 
 typedef struct {        /* RINEX control struct type */
@@ -1272,9 +1278,6 @@ typedef struct {        /* stream type */
 
 typedef struct {        /* stream converter type */
     int itype,otype;    /* input and output stream type */
-    int nmsg;           /* number of output messages */
-    int msgs[32];       /* output message types */
-    double tint[32];    /* output message intervals (s) */
     uint32_t tick[32];  /* cycle tick of output message */
     int ephsat[32];     /* satellites of output ephemeris */
     int stasel;         /* station info selection (0:remote,1:local) */
@@ -1628,6 +1631,8 @@ EXPORT int  open_rnxctr (rnxctr_t *rnx, FILE *fp);
 EXPORT int  input_rnxctr(rnxctr_t *rnx, FILE *fp);
 
 /* ephemeris and clock functions ---------------------------------------------*/
+EXPORT int pephclk(gtime_t time, int sat, const nav_t *nav, double *dts,
+                   double *varc);
 EXPORT double eph2clk (gtime_t time, const eph_t  *eph);
 EXPORT double geph2clk(gtime_t time, const geph_t *geph);
 EXPORT double seph2clk(gtime_t time, const seph_t *seph);

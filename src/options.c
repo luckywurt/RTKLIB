@@ -28,7 +28,7 @@
 *                             pos1-tropopt, pos1-sateph, pos1-navsys,
 *                             pos2-gloarmode,
 *-----------------------------------------------------------------------------*/
-#define _POSIX_C_SOURCE 199506
+#define _POSIX_C_SOURCE 200112L
 #include "rtklib.h"
 
 /* system options buffer -----------------------------------------------------*/
@@ -115,7 +115,8 @@ EXPORT opt_t sysopts[]={
     {"pos2-syncsol",    3,  (void *)&prcopt_.syncsol,    SWTOPT },
     {"pos2-slipthres",  1,  (void *)&prcopt_.thresslip,  "m"    },
     {"pos2-dopthres",   1,  (void *)&prcopt_.thresdop,   "m"    },
-    {"pos2-rejionno",   1,  (void *)&prcopt_.maxinno[0], "m"    },
+    {"pos2-rejionno",   1,  (void *)&prcopt_.maxinno[0], "m (DEPRECATED)"},
+    {"pos2-rejphase",   1,  (void *)&prcopt_.maxinno[0], "m"    },
     {"pos2-rejcode",    1,  (void *)&prcopt_.maxinno[1], "m"    },
     {"pos2-niter",      0,  (void *)&prcopt_.niter,      ""     },
     {"pos2-baselen",    1,  (void *)&prcopt_.baseline[0],"m"    },

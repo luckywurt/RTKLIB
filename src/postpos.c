@@ -773,7 +773,7 @@ static int readobsnav(gtime_t ts, gtime_t te, double ti, const char **infile,
         trace(1,"\n");
         return 0;
     }
-    if (nav->n<=0&&nav->ng<=0&&nav->ns<=0) {
+    if (nav->n<=0&&nav->ng<=0&&nav->ns<=0&&prcopt->sateph!=EPHOPT_PREC) {
         checkbrk("error : no nav data");
         trace(1,"\n");
         return 0;
@@ -1450,7 +1450,7 @@ extern int postpos(gtime_t ts, gtime_t te, double ti, double tu,
                 while (k<nf) index[k++]=j;
 
                 if (nf>=MAXINFILE) {
-                    trace(2,"too many input files. trancated\n");
+                    trace(2,"too many input files. truncated\n");
                     break;
                 }
             }
