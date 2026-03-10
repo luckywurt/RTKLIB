@@ -53,3 +53,14 @@ app/qtapp/packaging/packages/**.exe
 app/qtapp/packaging/packages/*/data
 app/qtapp/packaging/packages/com.rtklib/meta/license.txt
 app/qtapp/packaging/packages/RtkLibInstaller.exe
+
+# 排除测试
+test/
+lib/librtklib.dll
+lib/librtklib.dll.a
+
+app/consapp/rnx2str
+app/consapp/rtpos
+app/consapp/rtphone
+app/consapp/str2str2
+app/consapp/rnx2rtcm

@@ -47,42 +47,42 @@ class RTKLibTelnetSession:
     def connect_and_login(self, timeout=12.0):
         """
         建立连接并登录：兼容两种情况
-        1) 出现 password 提示 -> 发送密码 -> 等待 rtpos>
-        2) 直接出现 rtpos> （无密码）
+        1) 出现 password 提示 -> 发送密码 -> 等待 rtkrcv>
+        2) 直接出现 rtkrcv> （无密码）
         """
         try:
             self._tn = telnetlib.Telnet(self.host, self.port, timeout=timeout)
-            self.on_status(f"[INFO] 连接 {self.host}:{self.port} 成功，等待 password 或 rtpos> 提示...\n")
+            self.on_status(f"[INFO] 连接 {self.host}:{self.port} 成功，等待 password 或 rtkrcv> 提示...\n")
 
-            idx, match, text = self._tn.expect([b"password", b"rtpos> "], timeout=timeout)
+            idx, match, text = self._tn.expect([b"password", b"rtkrcv> "], timeout=timeout)
             self._dump_bytes_to_ui(text or b"")
 
             if idx == 0:
                 # 需要密码
                 self.on_status("[INFO] 检测到 password，发送口令...\n")
                 self._tn.write((self.password + "\r\n").encode("ascii"))
-                idx2, match2, text2 = self._tn.expect([b"rtpos> ", b"invalid password"], timeout=timeout)
+                idx2, match2, text2 = self._tn.expect([b"rtkrcv> ", b"invalid password"], timeout=timeout)
                 self._dump_bytes_to_ui(text2 or b"")
                 if idx2 == 0:
                     self._alive = True
-                    self.on_status("[OK] 登录成功（已获得 rtpos> 提示符）。\n")
+                    self.on_status("[OK] 登录成功（已获得 rtkrcv> 提示符）。\n")
                     return True
                 elif idx2 == 1:
                     self.on_status("[ERR] 登录失败：invalid password。\n")
                     self.close()
                     return False
                 else:
-                    self.on_status("[ERR] 登录失败：未等到 rtpos> 提示符。\n")
+                    self.on_status("[ERR] 登录失败：未等到 rtkrcv> 提示符。\n")
                     self.close()
                     return False
 
             elif idx == 1:
                 # 无密码直接进入
                 self._alive = True
-                self.on_status("[OK] 无密码登录，已获得 rtpos> 提示符。\n")
+                self.on_status("[OK] 无密码登录，已获得 rtkrcv> 提示符。\n")
                 return True
             else:
-                self.on_status("[ERR] 登录失败：未见 password / rtpos>。\n")
+                self.on_status("[ERR] 登录失败：未见 password / rtkrcv>。\n")
                 self.close()
                 return False
 
@@ -367,11 +367,11 @@ class App(tk.Tk):
         top.pack(fill="x", padx=8, pady=8)
 
         ttk.Label(top, text="Host:").pack(side="left", padx=(8, 4))
-        self.host_var = tk.StringVar(value="172.16.0.2")
+        self.host_var = tk.StringVar(value="192.168.0.10")
         ttk.Entry(top, width=16, textvariable=self.host_var).pack(side="left")
 
         ttk.Label(top, text="Port:").pack(side="left", padx=(12, 4))
-        self.port_var = tk.StringVar(value="9000")
+        self.port_var = tk.StringVar(value="9030")
         ttk.Entry(top, width=8, textvariable=self.port_var).pack(side="left")
 
         ttk.Label(top, text="Password:").pack(side="left", padx=(12, 4))
