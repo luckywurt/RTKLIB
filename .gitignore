@@ -60,7 +60,5 @@ lib/librtklib.dll
 lib/librtklib.dll.a
 
 app/consapp/rnx2str
-app/consapp/rtpos
 app/consapp/rtphone
 app/consapp/str2str2
-app/consapp/rnx2rtcm

@@ -1,4 +1,7 @@
-#define _POSIX_C_SOURCE 199506
+/*------------------------------------------------------------------------------
+ * rtpos : rtk-gps/gnss receiver console app
+ *-----------------------------------------------------------------------------*/
+#define _POSIX_C_SOURCE 200112L
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -83,6 +86,22 @@ static prcopt_t prcopt;            /* 处理选项 */
 static solopt_t solopt[2] = {{0}}; /* 解算选项 */
 static filopt_t filopt = {""};     /* 文件选项 */
 
+/* help text -----------------------------------------------------------------*/
+static const char *usage[] = {
+    "usage: rtpos [-s][-p port][-d dev][-o file][-w pwd][-r level][-t level][-sta sta]",
+    "options",
+    "  -s         start RTK server on program startup",
+    "  -nc        start RTK server on program startup with no console",
+    "  -p port    port number for telnet console",
+    "  -m port    port number for monitor stream",
+    "  -d dev     terminal device for console",
+    "  -o file    processing options file",
+    "  -w pwd     login password for remote console (\"\": no password)",
+    "  -r level   output solution status file (0:off,1:states,2:residuals)",
+    "  -t level   debug trace level (0:off,1-5:on)",
+    "  -sta sta   station name for receiver dcb",
+    "  --deamon   detach from the console",
+    "  --version  print the version and exit"};
 static const char *helptxt[] = {"start                 : start rtk server",
                                 "stop                  : stop rtk server",
                                 "restart               : restart rtk sever",
@@ -105,19 +124,20 @@ static const char *helptxt[] = {"start                 : start rtk server",
                                 "exit|ctr-D            : logout console (only for telnet)",
                                 "shutdown              : shutdown rtk server",
                                 ""};
-static const char *pathopts[] = {
-    "stream path formats",
-    "serial   : port[:bit_rate[:byte[:parity(n|o|e)[:stopb[:fctr(off|on)[#port]]]]]]]",
-    "file     : path[::T[::+offset][::xspeed]]",
-    "tcpsvr   : :port",
-    "tcpcli   : addr:port",
-    "ntripsvr : [passwd@]addr:port/mntpnt[:str]",
-    "ntripcli : user:passwd@addr:port/mntpnt",
-    "ntripcas : user:passwd@:[port]/mpoint[:srctbl]",
-    "ftp      : user:passwd@addr/path[::T=poff,tint,off,rint]",
-    "http     : addr/path[::T=poff,tint,off,rint]",
-    ""};
-/* 接收机选项表 ----------------------------------------------------*/
+static const char *pathopts[] =
+    {/* path options help */
+     "stream path formats",
+     "serial   : port[:bit_rate[:byte[:parity(n|o|e)[:stopb[:fctr(off|on)[#port]]]]]]]",
+     "file     : path[::T[::+offset][::xspeed]]",
+     "tcpsvr   : :port",
+     "tcpcli   : addr:port",
+     "ntripsvr : [passwd@]addr:port/mntpnt[:str]",
+     "ntripcli : user:passwd@addr:port/mntpnt",
+     "ntripcas : user:passwd@:[port]/mpoint[:srctbl]",
+     "ftp      : user:passwd@addr/path[::T=poff,tint,off,rint]",
+     "http     : addr/path[::T=poff,tint,off,rint]",
+     ""};
+/* receiver options table ----------------------------------------------------*/
 #define TIMOPT "0:gpst,1:utc,2:jst,3:tow"
 #define CONOPT "0:dms,1:deg,2:xyz,3:enu,4:pyl"
 #define FLGOPT "0:off,1:std+2:age/ratio/ns"
@@ -183,6 +203,14 @@ static opt_t rcvopts[] = {{"console-passwd", 2, (void *)passwd, ""},
                           {"file-cmdfile3", 2, (void *)rcvcmds[2], ""},
 
                           {"", 0, NULL, ""}};
+/* 打印使用说明 ---------------------------------------------------------------*/
+static void printusage(void) {
+  int i;
+  for (i = 0; i < (int)(sizeof(usage) / sizeof(*usage)); i++) {
+    fprintf(stderr, "%s\n", usage[i]);
+  }
+  exit(0);
+}
 /* 外部停止信号 ------------------------------------------------------*/
 static void sigshut(int sig) {
   trace(3, "sigshut: sig=%d\n", sig);
@@ -224,10 +252,10 @@ static void closemoni(void) {
   trace(3, "closemoni:\n");
   keepalive = 0;
 
-  /* 发送断开连接消息 */
+  /* send disconnect message */
   strwrite(&moni, (uint8_t *)MSG_DISCONN, strlen(MSG_DISCONN));
 
-  /* 等待客户端FIN */
+  /* wait fin from clients */
   sleepms(1000);
 
   strclose(&moni);
@@ -238,8 +266,8 @@ static int confwrite(vt_t *vt, const char *file) {
   char buff[MAXSTR], *p;
 
   strcpy(buff, file);
-  if ((p = strstr(buff, "::"))) *p = '\0';              /* 忽略路径中的选项 */
-  if (!vt->state || !(fp = fopen(buff, "r"))) return 1; /* 无现有文件 */
+  if ((p = strstr(buff, "::"))) *p = '\0';              /* omit options in path */
+  if (!vt->state || !(fp = fopen(buff, "r"))) return 1; /* no existing file */
   fclose(fp);
   vt_printf(vt, "overwrite %-16s ? (y/n): ", buff);
   if (!vt_gets(vt, buff, sizeof(buff)) || vt->brk) return 0;
@@ -364,7 +392,7 @@ static int startsvr(vt_t *vt) {
 
   trace(3, "startsvr:\n");
 
-  /* 从命令文件读取启动命令 */
+  /* read start commands from command files */
   for (i = 0; i < 3; i++) {
     if (!*rcvcmds[i]) continue;
     if (!readcmd(rcvcmds[i], s1[i], 0)) {
@@ -376,7 +404,7 @@ static int startsvr(vt_t *vt) {
     } else
       cmds_periodic[i] = s2[i];
   }
-  /* 确认覆盖 */
+  /* confirm overwrite */
   if (vt != NULL) {
     for (i = 3; i < 8; i++) {
       if (strtype[i] == STR_FILE && !confwrite(vt, strpath[i])) return 0;
@@ -390,15 +418,15 @@ static int startsvr(vt_t *vt) {
   pos[2] = nmeapos[2];
   pos2ecef(pos, npos);
 
-  /* 读取天线文件 */
+  /* read antenna file */
   readant(vt, &prcopt, &svr.nav, &svr.pcvsr);
 
-  /* 读取dcb文件 */
+  /* read dcb file */
   if (*filopt.dcb) {
     strcpy(sta[0].name, sta_name);
     readdcb(filopt.dcb, &svr.nav, sta);
   }
-  /* 打开大地水准面数据文件 */
+  /* open geoid data file */
   if (solopt[0].geoid > 0 && !opengeoid(solopt[0].geoid, filopt.geoid)) {
     trace(2, "geoid data open error: %s\n", filopt.geoid);
     vt_printf(vt, "geoid data open error: %s\n", filopt.geoid);
@@ -406,7 +434,7 @@ static int startsvr(vt_t *vt) {
   for (i = 0; *rcvopts[i].name; i++) modflgr[i] = 0;
   for (i = 0; *sysopts[i].name; i++) modflgs[i] = 0;
 
-  /* 设置流选项 */
+  /* set stream options */
   stropt[0] = timeout;
   stropt[1] = reconnect;
   stropt[2] = 1000;
@@ -414,12 +442,12 @@ static int startsvr(vt_t *vt) {
   stropt[4] = fswapmargin;
   strsetopt(stropt);
 
-  /* 设置ftp/http目录和代理 */
+  /* set ftp/http directory and proxy */
   strsetdir(filopt.tempdir);
   strsetproxy(proxyaddr);
 
 #ifdef RTKSHELLCMDS
-  /* 执行启动命令 */
+  /* execute start command */
   int ret;
   if (*startcmd && (ret = system(startcmd))) {
     trace(2, "command exec error: %s (%d)\n", startcmd, ret);
@@ -429,7 +457,7 @@ static int startsvr(vt_t *vt) {
   solopt[0].posf = strfmt[3];
   solopt[1].posf = strfmt[4];
 
-  /* 启动rtk服务器 */
+  /* start rtk server */
   if (!rtksvrstart(&svr, svrcycle, buffsize, strtype, (const char **)paths, strfmt, navmsgsel,
                    (const char **)cmds, (const char **)cmds_periodic, (const char **)ropts,
                    nmeacycle, nmeareq, npos, &prcopt, solopt, &moni, errmsg)) {
@@ -449,7 +477,7 @@ static void stopsvr(vt_t *vt) {
 
   if (!svr.state) return;
 
-  /* 从命令文件读取停止命令 */
+  /* read stop commands from command files */
   for (i = 0; i < 3; i++) {
     if (!*rcvcmds[i]) continue;
     if (!readcmd(rcvcmds[i], s[i], 1)) {
@@ -457,11 +485,11 @@ static void stopsvr(vt_t *vt) {
     } else
       cmds[i] = s[i];
   }
-  /* 停止rtk服务器 */
+  /* stop rtk server */
   rtksvrstop(&svr, (const char **)cmds);
 
 #ifdef RTKSHELLCMDS
-  /* 执行停止命令 */
+  /* execute stop command */
   int ret;
   if (*stopcmd && (ret = system(stopcmd))) {
     trace(2, "command exec error: %s (%d)\n", stopcmd, ret);
@@ -521,7 +549,7 @@ static void prsolution(vt_t *vt, const sol_t *sol, const double *rb) {
       covenu(pos, Qr, Qe);
       deg2dms(pos[0] * R2D, dms1, 4);
       deg2dms(pos[1] * R2D, dms2, 4);
-      if (solopt[0].height == 1) pos[2] -= geoidh(pos); /* 大地高 */
+      if (solopt[0].height == 1) pos[2] -= geoidh(pos); /* geodetic */
     }
     vt_printf(vt, " %s:%2.0f %02.0f %07.4f", pos[0] < 0 ? "S" : "N", fabs(dms1[0]), dms1[1],
               dms1[2]);
@@ -535,7 +563,7 @@ static void prsolution(vt_t *vt, const sol_t *sol, const double *rb) {
     if (norm(sol->rr, 3) > 0.0) {
       ecef2pos(sol->rr, pos);
       covenu(pos, Qr, Qe);
-      if (solopt[0].height == 1) pos[2] -= geoidh(pos); /* 大地高 */
+      if (solopt[0].height == 1) pos[2] -= geoidh(pos); /* geodetic */
     }
     vt_printf(vt, " %s:%11.8f", pos[0] < 0.0 ? "S" : "N", fabs(pos[0]) * R2D);
     vt_printf(vt, " %s:%12.8f", pos[1] < 0.0 ? "W" : "E", fabs(pos[1]) * R2D);
@@ -1007,7 +1035,7 @@ static void cmd_restart(char **args, int narg, vt_t *vt) {
   if (!startsvr(vt)) return;
   vt_printf(vt, "rtk server restart\n");
 }
-/* 解算命令 ----------------------------------------------------------*/
+/* 解算结果命令 ----------------------------------------------------------*/
 static void cmd_solution(char **args, int narg, vt_t *vt) {
   int i, cycle = 0;
 
@@ -1229,7 +1257,8 @@ static void cmd_set(char **args, int narg, vt_t *vt) {
 static void cmd_mark(char **args, int narg, vt_t *vt) {
   trace(3, "cmd_mark:\n");
 
-  // 记住标记名称以便重复，并默认用计数器替换
+  // Remember the marker name so that it can be repeated, and default
+  // to replacement by a counter.
   static int nmarker = 1;
   static char markername[128] = "%r";
   char markercomment[256] = {0};
@@ -1403,23 +1432,23 @@ static void *con_thread(void *arg) {
     return NULL;
   }
 
-  /* 自动启动如果选项已设置 */
-  if (start & 1) { /* 控制台启动 */
+  /* auto start if option set */
+  if (start & 1) { /* start with console */
     cmd_start(NULL, 0, con->vt);
     start = 0;
   }
 
   while (con->state) {
-    /* 输出提示符 */
+    /* output prompt */
     if (!vt_puts(con->vt, CMDPROMPT)) {
       con->state = 0;
       break;
     }
 
-    /* 输入命令 */
+    /* input command */
     if (!vt_gets(con->vt, buff, sizeof(buff))) break;
 
-    /* 解析命令 */
+    /* parse command */
     narg = 0;
     char *r;
     for (p = strtok_r(buff, " \t\n", &r); p && narg < MAXARG; p = strtok_r(NULL, " \t\n", &r)) {
@@ -1523,7 +1552,7 @@ static con_t *con_open(int sock, const char *dev) {
     free(con);
     return NULL;
   }
-  /* 启动控制台线程 */
+  /* start console thread */
   con->state = 1;
   if (pthread_create(&con->thread, NULL, con_thread, con)) {
     free(con);
@@ -1603,17 +1632,19 @@ static void accept_sock(int ssock, con_t **con) {
 
 static void deamonise(void) {
 #ifndef WIN32
-  /* 如果我们不是在后台启动的，fork并让父进程退出。保证子进程不是进程组领导者。 */
+  /* In case we were not started in the background, fork and let the parent
+   * exit.  Guarantees that the child is not a process group leader. */
   int childpid = fork();
   if (childpid < 0) {
     perror("fork\n");
     _exit(1);
   } else if (childpid > 0) {
-    /* 父进程 */
+    /* parent */
     _exit(0);
   }
 
-  /* 使我们成为新进程组的领导者，没有控制终端。 */
+  /* Make ourselves the leader of a new process group with no controlling
+   * terminal. */
   if (setsid() < 0) {
     perror("setsid\n");
     _exit(1);
@@ -1630,29 +1661,52 @@ static void deamonise(void) {
 #endif
 }
 
+/* rtpos main ---------------------------------------------------------------*/
 int main(int argc, char **argv) {
   con_t *con[MAXCON] = {0};
-  int i;
-  start = 1;        // 自动启动(1:控制台,2:无控制台)
-  int port = 9000;  // 远程控制台端口
-  moniport = 9001;  // 监控端口
-  int outstat = 0;  // 解算状态文件输出 0 关闭，1 输出状态，2 再加残差
-  int trace = 0;
-  int sock = 0;
-  char *dev = "";                                  // 指定本地控制台使用的终端设备
-  char file[MAXSTR] = "./config/ppp-static.conf";  // 输入的参数文件地址
+  int i, port = 0, outstat = 0, trace = 0, sock = 0;
+  char *dev = "", file[MAXSTR] = "";
   int deamon = 0;
 
-  if (deamon) deamonise();  // 后台运行
+  for (i = 1; i < argc; i++) {
+    if (!strcmp(argv[i], "-s"))
+      start |= 1; /* console */
+    else if (!strcmp(argv[i], "-nc"))
+      start |= 2; /* no console */
+    else if (!strcmp(argv[i], "-p") && i + 1 < argc)
+      port = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "-m") && i + 1 < argc)
+      moniport = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "-d") && i + 1 < argc)
+      dev = argv[++i];
+    else if (!strcmp(argv[i], "-o") && i + 1 < argc)
+      strcpy(file, argv[++i]);
+    else if (!strcmp(argv[i], "-w") && i + 1 < argc)
+      strcpy(passwd, argv[++i]);
+    else if (!strcmp(argv[i], "-r") && i + 1 < argc)
+      outstat = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "-t") && i + 1 < argc)
+      trace = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "-sta") && i + 1 < argc)
+      strcpy(sta_name, argv[++i]);
+    else if (!strcmp(argv[i], "--deamon"))
+      deamon = 1;
+    else if (!strcmp(argv[i], "--version")) {
+      fprintf(stderr, "rtpos RTKLIB %s %s\n", VER_RTKLIB, PATCH_LEVEL);
+      exit(0);
+    } else
+      printusage();
+  }
+  if (deamon) deamonise();
   if (trace > 0) {
     traceopen(TRACEFILE);
     tracelevel(trace);
   }
-  /* 初始化rtk服务器和监控端口 */
+  /* initialize rtk server and monitor port */
   rtksvrinit(&svr);
   strinit(&moni);
 
-  /* 加载选项文件 */
+  /* load options file */
   if (!*file) sprintf(file, "%s/%s", OPTSDIR, OPTSFILE);
 
   resetsysopts();
@@ -1660,22 +1714,22 @@ int main(int argc, char **argv) {
     fprintf(stderr, "no options file: %s. defaults used\n", file);
   }
   getsysopts(&prcopt, solopt, &filopt);
-  /* 复制系统选项用于第二个输出解算流 */
+  /* Copy the system options for the second output solution stream */
   solopt[1] = solopt[0];
 
-  /* 读取导航数据 */
+  /* read navigation data */
   if (!readnav(NAVIFILE, &svr.nav)) {
     fprintf(stderr, "no navigation data: %s\n", NAVIFILE);
   }
   if (outstat > 0) {
     rtkopenstat(STATFILE, outstat);
   }
-  /* 打开监控端口 */
+  /* open monitor port */
   if (moniport > 0 && !openmoni(moniport)) {
     fprintf(stderr, "monitor port open error: %d\n", moniport);
   }
   if (port) {
-    /* 打开套接字用于远程控制台 */
+    /* open socket for remote console */
     if ((sock = open_sock(port)) <= 0) {
       fprintf(stderr, "console open error port=%d\n", port);
       if (moniport > 0) closemoni();
@@ -1684,10 +1738,10 @@ int main(int argc, char **argv) {
       return EXIT_FAILURE;
     }
   }
-  if (start & 2) { /* 无控制台启动 */
+  if (start & 2) { /* Start without console */
     startsvr(NULL);
   } else if (!deamon) {
-    /* 打开设备用于本地控制台 */
+    /* open device for local console */
     if (!(con[0] = con_open(0, dev))) {
       fprintf(stderr, "console open error dev=%s\n", dev);
       if (moniport > 0) closemoni();
@@ -1696,28 +1750,28 @@ int main(int argc, char **argv) {
       return EXIT_FAILURE;
     }
   }
-  signal(SIGINT, sigshut);  /* 键盘中断 */
-  signal(SIGTERM, sigshut); /* 外部关闭信号 */
+  signal(SIGINT, sigshut);  /* keyboard interrupt */
+  signal(SIGTERM, sigshut); /* external shutdown signal */
   signal(SIGUSR2, sigshut);
   signal(SIGHUP, SIG_IGN);
   signal(SIGPIPE, SIG_IGN);
 
   while (!intflg) {
-    /* 接受远程控制台连接 */
+    /* accept remote console connection */
     accept_sock(sock, con);
     sleepms(100);
   }
-  /* 停止rtk服务器 */
+  /* stop rtk server */
   stopsvr(NULL);
 
-  /* 关闭控制台 */
+  /* close consoles */
   for (i = 0; i < MAXCON; i++) {
     con_close(con[i]);
   }
   if (moniport > 0) closemoni();
   if (outstat > 0) rtkclosestat();
 
-  /* 保存导航数据 */
+  /* save navigation data */
   if (!savenav(NAVIFILE, &svr.nav)) {
     fprintf(stderr, "navigation data save error: %s\n", NAVIFILE);
   }
