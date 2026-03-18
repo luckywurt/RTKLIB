@@ -19,6 +19,12 @@ public:
     RtServer();
     ~RtServer();
 
+    // 兼容访问底层 rtksvr_t，便于旧代码平滑迁移
+    rtksvr_t *raw() { return &m_svr; }
+    const rtksvr_t *raw() const { return &m_svr; }
+    void lock() { rtksvrlock(&m_svr); }
+    void unlock() { rtksvrunlock(&m_svr); }
+
     // 初始化 / 释放
     bool init();
     void cleanup();

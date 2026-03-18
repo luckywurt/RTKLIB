@@ -17,7 +17,10 @@
 #include <unistd.h>
 
 #include "rtklib.h"
+#include "rtserver.h"
+extern "C" {
 #include "vt.h"
+}
 
 #define PRGNAME "rtpos"                    /* 程序名 */
 #define CMDPROMPT "rtpos> "                /* 命令提示符 */
@@ -48,7 +51,9 @@ typedef struct {    /* 控制台类型 */
 } con_t;
 
 /* 全局变量 ----------------------------------------------------------*/
-static rtksvr_t svr;                  /* rtk服务器结构体 */
+// 使用 C++ 封装服务，保留对底层 rtksvr_t 的访问以尽量少改现有代码。
+static RtServer rtserver;
+static rtksvr_t &svr = *rtserver.raw();
 static stream_t moni;                 /* 监控流 */
 static int intflg = 0;                /* 中断标志 (2:关闭) */
 static char passwd[MAXSTR] = "admin"; /* 登录密码 */
@@ -458,9 +463,10 @@ static int startsvr(vt_t *vt) {
   solopt[1].posf = strfmt[4];
 
   /* start rtk server */
-  if (!rtksvrstart(&svr, svrcycle, buffsize, strtype, (const char **)paths, strfmt, navmsgsel,
-                   (const char **)cmds, (const char **)cmds_periodic, (const char **)ropts,
-                   nmeacycle, nmeareq, npos, &prcopt, solopt, &moni, errmsg)) {
+  if (!rtserver.start(svrcycle, buffsize, strtype, (const char **)paths, strfmt, navmsgsel,
+                      (const char **)cmds, (const char **)cmds_periodic, (const char **)ropts,
+                      nmeacycle, nmeareq, npos, &prcopt, solopt, &moni,
+                      false /* roverInternal */, errmsg)) {
     trace(2, "rtk server start error (%s)\n", errmsg);
     vt_printf(vt, "rtk server start error (%s)\n", errmsg);
     free_pcvs(&svr.pcvsr);
@@ -486,7 +492,7 @@ static void stopsvr(vt_t *vt) {
       cmds[i] = s[i];
   }
   /* stop rtk server */
-  rtksvrstop(&svr, (const char **)cmds);
+  rtserver.stop((const char **)cmds);
 
 #ifdef RTKSHELLCMDS
   /* execute stop command */
@@ -632,7 +638,7 @@ static void prstatus(vt_t *vt) {
   rtk_t *rtk = (rtk_t *)malloc(sizeof(rtk_t));
   if (rtk == NULL) return;
 
-  rtksvrlock(&svr);
+  rtserver.lock();
   *rtk = svr.rtk;
   thread = svr.thread;
   cycle = svr.cycle;
@@ -663,7 +669,7 @@ static void prstatus(vt_t *vt) {
     eventime = svr.raw[0].obs.data[0].eventime;
   }
   time2str(eventime, tmstr, 9);
-  rtksvrunlock(&svr);
+  rtserver.unlock();
 
   for (i = n = 0; i < MAXSAT; i++) {
     if (rtk->opt.mode == PMODE_SINGLE && !rtk->ssat[i].vs) continue;
@@ -788,9 +794,9 @@ static void prsatellite(vt_t *vt, int nf) {
   rtk_t *rtk = (rtk_t *)malloc(sizeof(rtk_t));
   if (rtk == NULL) return;
 
-  rtksvrlock(&svr);
+  rtserver.lock();
   *rtk = svr.rtk;
-  rtksvrunlock(&svr);
+  rtserver.unlock();
   if (nf <= 0 || nf > NFREQ) nf = NFREQ;
   vt_printf(vt, "\n%s%3s %2s %5s %4s", ESC_BOLD, "SAT", "C1", "Az", "El");
   for (j = 0; j < nf; j++) vt_printf(vt, " L%d", frq[j]);
@@ -837,14 +843,14 @@ static void probserv(vt_t *vt, int nf) {
     return;
   }
 
-  rtksvrlock(&svr);
+  rtserver.lock();
   for (i = 0; i < svr.obs[0][0].n && n < MAXOBS * 2; i++) {
     obs[n++] = svr.obs[0][0].data[i];
   }
   for (i = 0; i < svr.obs[1][0].n && n < MAXOBS * 2; i++) {
     obs[n++] = svr.obs[1][0].data[i];
   }
-  rtksvrunlock(&svr);
+  rtserver.unlock();
 
   if (nf <= 0 || nf > NFREQ) nf = NFREQ;
   vt_printf(vt, "\n%s%-22s %3s %s", ESC_BOLD, "      TIME(GPST)", "SAT", "R");
@@ -877,13 +883,13 @@ static void prnavidata(vt_t *vt) {
 
   trace(4, "prnavidata:\n");
 
-  rtksvrlock(&svr);
+  rtserver.lock();
   time = svr.rtk.sol.time;
   for (i = 0; i < MAXSAT; i++) eph[i] = svr.nav.eph[i];
   for (i = 0; i < MAXPRNGLO; i++) geph[i] = svr.nav.geph[i];
   for (i = 0; i < 8; i++) ion[i] = svr.nav.ion_gps[i];
   for (i = 0; i < 8; i++) utc[i] = svr.nav.utc_gps[i];
-  rtksvrunlock(&svr);
+  rtserver.unlock();
 
   vt_printf(vt, "\n%s%3s %3s %3s %3s %3s %3s %3s %19s %19s %19s %3s %3s%s\n", ESC_BOLD, "SAT", "S",
             "IOD", "IOC", "FRQ", "A/A", "SVH", "Toe", "Toc", "Ttr/Tof", "L2C", "L2P", ESC_RESET);
@@ -938,13 +944,13 @@ static void prerror(vt_t *vt) {
 
   trace(4, "prerror:\n");
 
-  rtksvrlock(&svr);
+  rtserver.lock();
   if ((n = svr.rtk.neb) > 0) {
     svr.rtk.errbuf[n] = '\0';
     vt_puts(vt, svr.rtk.errbuf);
     svr.rtk.neb = 0;
   }
-  rtksvrunlock(&svr);
+  rtserver.unlock();
 }
 /* 打印流 --------------------------------------------------------------*/
 static void prstream(vt_t *vt) {
@@ -961,13 +967,13 @@ static void prstream(vt_t *vt) {
 
   trace(4, "prstream:\n");
 
-  rtksvrlock(&svr);
+  rtserver.lock();
   for (i = 0; i < 8; i++) stream[i] = svr.stream[i];
   for (i = 0; i < 3; i++) format[i] = svr.format[i];
   for (i = 3; i < 5; i++) format[i] = svr.solopt[i - 3].posf;
   stream[8] = moni;
   format[8] = SOLF_LLH;
-  rtksvrunlock(&svr);
+  rtserver.unlock();
 
   vt_printf(vt, "\n%s%-12s %-8s %-5s %s %10s %7s %10s %7s %-24s %s%s\n", ESC_BOLD, "Stream", "Type",
             "Fmt", "S", "In-byte", "In-bps", "Out-byte", "Out-bps", "Path", "Message", ESC_RESET);
@@ -986,12 +992,12 @@ static void prssr(vt_t *vt) {
   int i, valid;
   char tstr[40], id[8], *p = buff;
 
-  rtksvrlock(&svr);
+  rtserver.lock();
   time = svr.rtk.sol.time;
   for (i = 0; i < MAXSAT; i++) {
     ssr[i] = svr.nav.ssr[i];
   }
-  rtksvrunlock(&svr);
+  rtserver.unlock();
 
   p += sprintf(p,
                "\n%s%3s %3s %3s %3s %3s %19s %6s %6s %6s %6s %6s %6s %8s "
@@ -1046,10 +1052,10 @@ static void cmd_solution(char **args, int narg, vt_t *vt) {
   if (cycle > 0) svr.nsol = 0;
 
   while (!vt_chkbrk(vt)) {
-    rtksvrlock(&svr);
+    rtserver.lock();
     for (i = 0; i < svr.nsol; i++) prsolution(vt, &svr.solbuf[i], svr.rtk.rb);
     svr.nsol = 0;
-    rtksvrunlock(&svr);
+    rtserver.unlock();
     if (cycle > 0)
       sleepms(cycle);
     else
@@ -1134,9 +1140,9 @@ static void cmd_navidata(char **args, int narg, vt_t *vt) {
 static void cmd_error(char **args, int narg, vt_t *vt) {
   trace(3, "cmd_error:\n");
 
-  rtksvrlock(&svr);
+  rtserver.lock();
   svr.rtk.neb = 0;
-  rtksvrunlock(&svr);
+  rtserver.unlock();
 
   while (!vt_chkbrk(vt)) {
     prerror(vt);
@@ -1271,7 +1277,7 @@ static void cmd_mark(char **args, int narg, vt_t *vt) {
   nmarker++;
   char markername_rep[1024];
   reppath(markername, markername_rep, utc2gpst(timeget()), nmarker_str, "");
-  rtksvrmark(&svr, markername_rep, markercomment);
+  rtserver.rtksvrmark(markername_rep, markercomment);
 
   vt_printf(vt, "%-28s: %s %s\n", "mark", markername_rep, markercomment);
 }
@@ -1289,9 +1295,9 @@ static void cmd_mode(char **args, int narg, vt_t *vt) {
     return;
   }
 
-  rtksvrlock(&svr);
+  rtserver.lock();
   int pmode = svr.rtk.opt.mode;
-  rtksvrunlock(&svr);
+  rtserver.unlock();
 
   if (args[1][0] == 'G' || args[1][0] == 'g') {
     // Go
@@ -1324,9 +1330,9 @@ static void cmd_mode(char **args, int narg, vt_t *vt) {
     return;
   }
 
-  rtksvrlock(&svr);
+  rtserver.lock();
   svr.rtk.opt.mode = pmode;
-  rtksvrunlock(&svr);
+  rtserver.unlock();
 
   vt_printf(vt, "%-28s: %s\n", "positioning mode", mode[pmode]);
 }
@@ -1665,7 +1671,8 @@ static void deamonise(void) {
 int main(int argc, char **argv) {
   con_t *con[MAXCON] = {0};
   int i, port = 0, outstat = 0, trace = 0, sock = 0;
-  char *dev = "", file[MAXSTR] = "";
+  const char *dev = "";
+  char file[MAXSTR] = "";
   int deamon = 0;
 
   for (i = 1; i < argc; i++) {
@@ -1703,7 +1710,10 @@ int main(int argc, char **argv) {
     tracelevel(trace);
   }
   /* initialize rtk server and monitor port */
-  rtksvrinit(&svr);
+  if (!rtserver.init()) {
+    fprintf(stderr, "rtk server init error\n");
+    return EXIT_FAILURE;
+  }
   strinit(&moni);
 
   /* load options file */
@@ -1778,3 +1788,4 @@ int main(int argc, char **argv) {
   traceclose();
   return 0;
 }
+

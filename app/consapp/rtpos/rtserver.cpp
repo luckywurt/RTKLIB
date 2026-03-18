@@ -1,3 +1,6 @@
+#include <algorithm>
+#include <cstdarg>
+#include <cstdlib>
 #include <cstring>
 #include <cstdio>
 #include <cmath>
