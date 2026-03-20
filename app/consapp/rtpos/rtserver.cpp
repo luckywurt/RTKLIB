@@ -39,6 +39,7 @@ void RtServer::cleanup() {
     rtksvrfree(&m_svr);
     strclose(&m_moni);
     m_q.clear();
+    resetObsMatchCache();
 }
 
 // 启动/停止
@@ -50,6 +51,7 @@ bool RtServer::start(int cycle, int buffsize, int *strs,
                      stream_t *moni, bool roverInternal, char *errmsg) {
     if (isRunning()) { if (errmsg) sprintf(errmsg,"server already started"); return false; }
     m_roverInternal = roverInternal;
+    resetObsMatchCache();
 
     // 复刻 rtksvrstart()逻辑
     gtime_t time,time0={0};
@@ -188,6 +190,7 @@ void RtServer::stop(const char **cmds) {
     // 内部队列清空
     std::lock_guard<std::mutex> lk(m_qmtx);
     m_q.clear();
+    resetObsMatchCache();
 }
 
 // 向观测队列注入观测
@@ -710,6 +713,151 @@ bool RtServer::getErrorStatusText(std::string &out) {
     return !out.empty();
 }
 
+void RtServer::resetObsMatchCache() {
+    m_roverMatchCache.clear();
+    m_baseMatchCache.clear();
+    m_latestObsTime = gtime_t{};
+    m_latestObsTimeValid = false;
+}
+
+int RtServer::pushObsToMatchCache(const obs_t *obs, int streamIndex) {
+    if (!obs || obs->n <= 0) return 0;
+    if (streamIndex != 0 && streamIndex != 1) return 0;
+
+    EpochObs epoch{};
+    epoch.time = obs->data[0].time;
+    epoch.n = obs->n > MAXOBS ? MAXOBS : obs->n;
+    for (int i = 0; i < epoch.n; ++i) epoch.data[i] = obs->data[i];
+
+    // 记录当前已接收的最新观测时间，用于“观测时间滞后”判定
+    if (!m_latestObsTimeValid || timediff(epoch.time, m_latestObsTime) > DTTOL) {
+        m_latestObsTime = epoch.time;
+        m_latestObsTimeValid = true;
+    }
+
+    auto &queue = (streamIndex == 0) ? m_roverMatchCache : m_baseMatchCache;
+    int droppedOldest = 0;
+    if ((int)queue.size() >= MAXOBSBUF) {
+        droppedOldest = 1;
+        tracet(2, "pushObsToMatchCache: %s 队列满，丢弃最旧历元\n",
+               streamIndex == 0 ? "rover" : "base");
+        queue.pop_front();
+    }
+
+    // 按观测时间有序插入，保证缓存始终按时间排序
+    auto it = queue.begin();
+    while (it != queue.end() && timediff(epoch.time, it->time) >= -DTTOL) ++it;
+    queue.insert(it, epoch);
+
+    return droppedOldest ? -1 : 1;
+}
+
+bool RtServer::tryMatchObsFromCache(int &status, int &baseIndex, double &dt) {
+    const double T_sync = 0.1;
+    const double T_pair_max = 30.0;
+    const double T_rover_wait_max = 30.0;
+    const double T_match_lag = 1.0;
+
+    status = OBS_MATCH_WAIT;
+    baseIndex = -1;
+    dt = 0.0;
+
+    if (m_roverMatchCache.empty()) return false;
+
+    const gtime_t roverTime = m_roverMatchCache.front().time;
+
+    // 基于观测时间清理过旧 base，且保留至少1个旧历元可复用
+    while (m_baseMatchCache.size() > 1 &&
+           timediff(roverTime, m_baseMatchCache[1].time) > T_pair_max + DTTOL) {
+        m_baseMatchCache.pop_front();
+    }
+
+    double obsLagSec = 0.0;
+    if (m_latestObsTimeValid) {
+        obsLagSec = timediff(m_latestObsTime, roverTime);
+        if (obsLagSec < 0.0) obsLagSec = 0.0;
+    }
+
+    int prev = -1, next = -1;
+    double dtPrev = 0.0, dtNext = 0.0;
+    for (int i = 0; i < (int)m_baseMatchCache.size(); ++i) {
+        const double d = timediff(m_baseMatchCache[i].time, roverTime);
+        if (d <= DTTOL) {
+            prev = i;
+            dtPrev = d;
+            continue;
+        }
+        next = i;
+        dtNext = d;
+        break;
+    }
+
+    // 同历元判定
+    if (prev >= 0 && fabs(dtPrev) <= T_sync + DTTOL) {
+        status = OBS_MATCH_READY;
+        baseIndex = prev;
+        dt = dtPrev;
+        return true;
+    }
+    if (next >= 0 && fabs(dtNext) <= T_sync + DTTOL &&
+        (prev < 0 || fabs(dtNext) <= fabs(dtPrev) + DTTOL)) {
+        status = OBS_MATCH_READY;
+        baseIndex = next;
+        dt = dtNext;
+        return true;
+    }
+
+    // 两侧都有 base 时，按最近邻配对
+    if (prev >= 0 && next >= 0) {
+        if (fabs(dtNext) <= fabs(dtPrev) + DTTOL) {
+            status = OBS_MATCH_READY;
+            baseIndex = next;
+            dt = dtNext;
+        } else {
+            status = OBS_MATCH_READY;
+            baseIndex = prev;
+            dt = dtPrev;
+        }
+        return true;
+    }
+
+    // 固定小滞后判定：滞后不足先继续等待
+    if (obsLagSec < T_match_lag - DTTOL) return false;
+
+    // 仅有未来 base：允许单侧匹配，但受上限约束
+    if (prev < 0 && next >= 0) {
+        if (fabs(dtNext) > T_pair_max + DTTOL || obsLagSec > T_rover_wait_max + DTTOL) {
+            status = OBS_MATCH_DROP;
+            return true;
+        }
+        status = OBS_MATCH_READY;
+        baseIndex = next;
+        dt = dtNext;
+        return true;
+    }
+
+    // 仅有过去 base：继续等待 next，超时或超阈值后丢弃
+    if (prev >= 0) {
+        if (fabs(dtPrev) > T_pair_max + DTTOL || obsLagSec > T_rover_wait_max + DTTOL) {
+            status = OBS_MATCH_DROP;
+            return true;
+        }
+        return false;
+    }
+
+    if (obsLagSec > T_rover_wait_max + DTTOL) {
+        status = OBS_MATCH_DROP;
+        return true;
+    }
+    return false;
+}
+
+void RtServer::consumeMatchResult(int status) {
+    (void)status;
+    // 匹配后仅弹出 rover 队首，base 允许被后续 rover 复用
+    if (!m_roverMatchCache.empty()) m_roverMatchCache.pop_front();
+}
+
 // 解算线程
 void RtServer::solverThread() {
     rtksvr_t *svr=&m_svr;
@@ -772,14 +920,60 @@ void RtServer::solverThread() {
             }
             for (i=0;i<3;i++) svr->rtk.opt.rb[i]=svr->rb_ave[i];
         }
+        // 先把本轮新解码出的 rover/base 历元压入匹配缓存
         for (i=0;i<fobs[0];i++) {
+            if (pushObsToMatchCache(&svr->obs[0][i],0)<0) {
+                svr->prcout++;
+            }
+        }
+        for (i=0;i<fobs[1];i++) {
+            pushObsToMatchCache(&svr->obs[1][i],1);
+        }
+
+        // 只处理 rover 队首，按最近邻匹配 base，再送入 rtkpos
+        for (;;) {
+            int matchStatus = OBS_MATCH_WAIT;
+            int baseIndex = -1;
+            double matchDt = 0.0;
+
+            if (!tryMatchObsFromCache(matchStatus, baseIndex, matchDt)) break;
+
+            if (matchStatus == OBS_MATCH_DROP) {
+                if (!m_roverMatchCache.empty()) {
+                    char tr[64];
+                    time2str(m_roverMatchCache.front().time, tr, 3);
+                    tracet(3, "obs-match: drop rover=%s nrov=%d nbase=%d\n",
+                           tr, (int)m_roverMatchCache.size(), (int)m_baseMatchCache.size());
+                }
+                consumeMatchResult(matchStatus);
+                svr->prcout++;
+                continue;
+            }
+            if (matchStatus != OBS_MATCH_READY) break;
+
+            if (baseIndex < 0 || baseIndex >= (int)m_baseMatchCache.size() || m_roverMatchCache.empty()) {
+                consumeMatchResult(matchStatus);
+                svr->prcout++;
+                continue;
+            }
+
+            {
+                char tr[64],tb[64];
+                time2str(m_roverMatchCache.front().time,tr,3);
+                time2str(m_baseMatchCache[baseIndex].time,tb,3);
+                tracet(3,"obs-match: rover=%s base=%s dt=%.3f nrov=%d nbase=%d\n",
+                       tr,tb,matchDt,(int)m_roverMatchCache.size(),(int)m_baseMatchCache.size());
+            }
+
             obs.n=0;
-            for (j=0;j<svr->obs[0][i].n&&obs.n<MAXOBS*2; j++) {
-                obs.data[obs.n++]=svr->obs[0][i].data[j];
+            for (j=0;j<m_roverMatchCache.front().n&&obs.n<MAXOBS*2; j++) {
+                obs.data[obs.n++]=m_roverMatchCache.front().data[j];
             }
-            for (j=0;j<svr->obs[1][0].n&&obs.n<MAXOBS*2; j++) {
-                obs.data[obs.n++]=svr->obs[1][0].data[j];
+            for (j=0;j<m_baseMatchCache[baseIndex].n&&obs.n<MAXOBS*2; j++) {
+                obs.data[obs.n++]=m_baseMatchCache[baseIndex].data[j];
             }
+            consumeMatchResult(matchStatus);
+
             if (!strstr(svr->rtk.opt.pppopt,"-DIS_FCB")) {
                 corr_phase_bias(obs.data,obs.n,&svr->nav);
             }
@@ -790,10 +984,10 @@ void RtServer::solverThread() {
             if (svr->rtk.sol.stat!=SOLQ_NONE) {
                 tt=(int)(tickget()-tick)/1000.0+DTTOL;
                 timeset(gpst2utc(timeadd(svr->rtk.sol.time,tt)));
-                writesol(svr,i);
+                writesol(svr,0);
             }
             if ((int)(tickget()-tick)>=svr->cycle) {
-                svr->prcout+=fobs[0]-i-1;
+                break;
             }
         }
         if (svr->rtk.sol.stat==SOLQ_NONE && (int)(tick-tick1hz)>=1000) {

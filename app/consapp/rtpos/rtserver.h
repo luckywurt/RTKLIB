@@ -69,6 +69,11 @@ public:
     int  rtksvrmark(const char *name, const char *comment);
 
 private:
+    // 观测匹配状态
+    static const int OBS_MATCH_WAIT  = 0;
+    static const int OBS_MATCH_READY = 1;
+    static const int OBS_MATCH_DROP  = 2;
+
     // 线程与内部数据结构
     struct EpochObs {
         gtime_t time{};
@@ -78,6 +83,12 @@ private:
 
     // 解算线程：复刻 rtksvrthread 的主体逻辑
     void solverThread();
+
+    // 观测配对缓存与匹配流程（按时间队首推进）
+    void resetObsMatchCache();
+    int  pushObsToMatchCache(const obs_t *obs, int streamIndex);
+    bool tryMatchObsFromCache(int &status, int &baseIndex, double &dt);
+    void consumeMatchResult(int status);
 
     // 从内部队列取一帧观测注入解算线程
     int decodeInternal(rtksvr_t *svr, int index);
@@ -110,5 +121,11 @@ private:
     static bool m_roverInternal;
     std::deque<EpochObs> m_q;
     std::mutex m_qmtx;
+
+    // rover/base 配对缓存（仅 solverThread 线程访问）
+    std::deque<EpochObs> m_roverMatchCache;
+    std::deque<EpochObs> m_baseMatchCache;
+    gtime_t m_latestObsTime{};
+    bool m_latestObsTimeValid{false};
 };
 
