@@ -31,7 +31,7 @@ if (UNIX)
   target_link_libraries(str2str rtklib)
   install(TARGETS str2str RUNTIME DESTINATION bin)
 
-  add_executable(rtpos rtpos/rtpos.cpp rtpos/rtserver.cpp rtpos/vt.c)
+  add_executable(rtpos rtpos/rtpos.cpp rtpos/rtserver.cpp rtpos/rt_rinex.cpp rtpos/vt.c)
   target_link_libraries(rtpos rtklib)
   install(TARGETS rtpos RUNTIME DESTINATION bin)
 

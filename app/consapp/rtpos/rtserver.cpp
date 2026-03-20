@@ -1210,12 +1210,12 @@ int RtServer::decodeInternal(rtksvr_t *svr, int index){
     EpochObs epoch{};
     bool has_data = false;
 
-    // 队列加锁取最新一帧，清空剩余
+    // 队列加锁按时间顺序取一帧
     {
         std::lock_guard<std::mutex> lk(m_qmtx);
         if (!m_q.empty()) {
-            epoch = m_q.back(); // 取最新数据
-            m_q.clear();
+            epoch = m_q.front();
+            m_q.pop_front();
             has_data = true;
         }
     }

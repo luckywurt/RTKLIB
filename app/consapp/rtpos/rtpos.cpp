@@ -18,6 +18,7 @@
 
 #include "rtklib.h"
 #include "rtserver.h"
+#include "rt_rinex.h"
 extern "C" {
 #include "vt.h"
 }
@@ -86,6 +87,10 @@ static int keepalive = 0;       /* 保持连接标志 */
 static int start = 0;           /* 自动启动 */
 static int fswapmargin = 30;    /* 文件交换边界 (s) */
 static char sta_name[256] = ""; /* 站点名称 */
+static int rinex_in = 0;        /* 使用rinex注入观测 (0:不使用,1:使用) */
+static char rinex_path[MAXSTR] = ""; /* rinex观测文件路径 */
+static int internal_obs = 1000;       /* 注入间隔 (ms) */
+static int time_offset = 0;           /* 注入延迟启动 (s) */
 
 static prcopt_t prcopt;            /* 处理选项 */
 static solopt_t solopt[2] = {{0}}; /* 解算选项 */
@@ -154,6 +159,7 @@ static const char *pathopts[] =
 #define NMEOPT "0:off,1:latlon,2:single"
 #define SOLOPT "0:llh,1:xyz,2:enu,3:nmea,4:stat"
 #define MSGOPT "0:all,1:rover,2:base,3:corr"
+#define RINOPT "0:off,1:on"
 
 static opt_t rcvopts[] = {{"console-passwd", 2, (void *)passwd, ""},
                           {"console-timetype", 3, (void *)&timetype, TIMOPT},
@@ -206,6 +212,10 @@ static opt_t rcvopts[] = {{"console-passwd", 2, (void *)passwd, ""},
                           {"file-cmdfile1", 2, (void *)rcvcmds[0], ""},
                           {"file-cmdfile2", 2, (void *)rcvcmds[1], ""},
                           {"file-cmdfile3", 2, (void *)rcvcmds[2], ""},
+                          {"rinex-in", 0, (void *)&rinex_in, RINOPT},
+                          {"rinex-path", 2, (void *)rinex_path, ""},
+                          {"internal-obs", 0, (void *)&internal_obs, "ms"},
+                          {"time-offset", 0, (void *)&time_offset, "s"},
 
                           {"", 0, NULL, ""}};
 /* 打印使用说明 ---------------------------------------------------------------*/
@@ -394,8 +404,17 @@ static int startsvr(vt_t *vt) {
                    strpath[4], strpath[5], strpath[6], strpath[7]};
   char errmsg[2048] = "";
   int i, stropt[8] = {0};
+  const int use_rinex_input = rinex_in != 0;
+  const int inject_interval_ms = internal_obs < 1 ? 1 : (internal_obs > 100000 ? 100000 : internal_obs);
+  const int inject_time_offset_s = time_offset < 0 ? 0 : time_offset;
 
   trace(3, "startsvr:\n");
+
+  if (use_rinex_input && !*rinex_path) {
+    trace(2, "rinex-path is empty while rinex-in=1\n");
+    if (vt) vt_printf(vt, "rinex-path is empty while rinex-in=1\n");
+    return 0;
+  }
 
   /* read start commands from command files */
   for (i = 0; i < 3; i++) {
@@ -466,11 +485,22 @@ static int startsvr(vt_t *vt) {
   if (!rtserver.start(svrcycle, buffsize, strtype, (const char **)paths, strfmt, navmsgsel,
                       (const char **)cmds, (const char **)cmds_periodic, (const char **)ropts,
                       nmeacycle, nmeareq, npos, &prcopt, solopt, &moni,
-                      false /* roverInternal */, errmsg)) {
+                      use_rinex_input /* roverInternal */, errmsg)) {
     trace(2, "rtk server start error (%s)\n", errmsg);
-    vt_printf(vt, "rtk server start error (%s)\n", errmsg);
+    if (vt) vt_printf(vt, "rtk server start error (%s)\n", errmsg);
     free_pcvs(&svr.pcvsr);
     return 0;
+  }
+
+  if (use_rinex_input) {
+    if (!rt_rinex_start(&rtserver, rinex_path, inject_interval_ms, inject_time_offset_s, errmsg,
+                        sizeof(errmsg))) {
+      trace(2, "rinex inject start error (%s)\n", errmsg);
+      if (vt) vt_printf(vt, "rinex inject start error (%s)\n", errmsg);
+      rtserver.stop(NULL);
+      free_pcvs(&svr.pcvsr);
+      return 0;
+    }
   }
   return 1;
 }
@@ -480,6 +510,9 @@ static void stopsvr(vt_t *vt) {
   int i;
 
   trace(3, "stopsvr:\n");
+
+  /* 无论服务是否运行，都先回收rinex注入线程 */
+  rt_rinex_stop();
 
   if (!svr.state) return;
 
@@ -491,6 +524,7 @@ static void stopsvr(vt_t *vt) {
     } else
       cmds[i] = s[i];
   }
+
   /* stop rtk server */
   rtserver.stop((const char **)cmds);
 
