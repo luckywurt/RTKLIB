@@ -47,41 +47,6 @@
 
 #define MIN_INT_RESET   30000   /* mininum interval of reset command (ms) */
 
-typedef struct {        /* cached observation epoch */
-    gtime_t time;       /* epoch time */
-    int n;              /* number of observations */
-    obsd_t data[MAXOBS];
-} rtkobs_epoch_t;
-
-typedef struct {        /* rover/base epoch cache for realtime matching */
-    gtime_t latest_time; /* latest observed GNSS time */
-    int latest_valid;    /* latest GNSS time is valid */
-    int n_rover;
-    int n_base;
-    rtkobs_epoch_t rover[MAXOBSBUF];
-    rtkobs_epoch_t base [MAXOBSBUF];
-} rtkobs_match_cache_t;
-
-typedef struct {        /* epoch matching decision */
-    int status;         /* 0:wait,1:matched,2:drop rover */
-    int base_index;     /* matched base index in cache */
-    double dt;          /* base-rover time difference (s) */
-} rtkobs_match_result_t;
-
-enum {
-    OBS_MATCH_WAIT  = 0,
-    OBS_MATCH_READY = 1,
-    OBS_MATCH_DROP  = 2
-};
-
-static void pop_obs_epoch_front(rtkobs_epoch_t *queue, int *n, int pop_n);
-static int push_obs_epoch_to_cache(rtkobs_match_cache_t *cache,
-                                   const obs_t *obs, int stream_index);
-static int try_match_obs_epoch(rtkobs_match_cache_t *cache,
-                               rtkobs_match_result_t *result);
-static void consume_match_result(rtkobs_match_cache_t *cache,
-                                 const rtkobs_match_result_t *result);
-
 /* write solution header to output stream ------------------------------------*/
 static void writesolhead(stream_t *stream, const solopt_t *solopt, const prcopt_t *prcopt)
 {
@@ -660,7 +625,6 @@ static void *rtksvrthread(void *arg)
 {
     rtksvr_t *svr=(rtksvr_t *)arg;
     obs_t obs;
-    rtkobs_match_cache_t *match_cache;
     sol_t sol={{0}};
     double tt;
     uint32_t tick,ticknmea,tick1hz,tickreset;
@@ -675,12 +639,6 @@ static void *rtksvrthread(void *arg)
       trace(1, "rtksvrthread: obsd_t alloc failed\n");
       return 0;
     }
-    match_cache=(rtkobs_match_cache_t *)calloc(1,sizeof(rtkobs_match_cache_t));
-    if (match_cache==NULL) {
-        trace(1, "rtksvrthread: epoch cache alloc failed\n");
-        free(data);
-        return 0;
-    }
     obs.data = data;
     obs.n = 0;
     obs.nmax = MAXOBS * 2;
@@ -692,7 +650,6 @@ static void *rtksvrthread(void *arg)
 
     for (cycle=0;svr->state;cycle++) {
         tick=tickget();
-        // 读取 3 路输入流到 server 输入缓冲区
         for (i=0;i<3;i++) {
             p=svr->buff[i]+svr->nb[i]; q=svr->buff[i]+svr->buffsize;
             
@@ -711,7 +668,6 @@ static void *rtksvrthread(void *arg)
             svr->npb[i]+=n;
             rtksvrunlock(svr);
         }
-        // 解码原始字节流到观测数据 obs
         int fobs[3]={0};
         for (i=0;i<3;i++) {
             if (svr->format[i]==STRFMT_SP3||svr->format[i]==STRFMT_RNXCLK) {
@@ -736,53 +692,14 @@ static void *rtksvrthread(void *arg)
             }
             for (i=0;i<3;i++) svr->rtk.opt.rb[i]=svr->rb_ave[i];
         }
-        for (i=0;i<fobs[0];i++) {
-            if (push_obs_epoch_to_cache(match_cache,&svr->obs[0][i],0)<0) {
-                svr->prcout++;
-            }
-        }
-        for (i=0;i<fobs[1];i++) {
-            push_obs_epoch_to_cache(match_cache,&svr->obs[1][i],1);
-        }
-        for (;;) {
-            rtkobs_match_result_t match={0};
-            int base_index;
-
-            if (!try_match_obs_epoch(match_cache,&match)) break;
-
-            if (match.status==OBS_MATCH_DROP) {
-                char tr[64];
-                time2str(match_cache->rover[0].time,tr,3);
-                tracet(3,"obs-match: drop rover=%s nrov=%d nbase=%d\n",
-                       tr,match_cache->n_rover,match_cache->n_base);
-                consume_match_result(match_cache,&match);
-                svr->prcout++;
-                continue;
-            }
-            if (match.status!=OBS_MATCH_READY) break;
-
-            base_index=match.base_index;
-            if (base_index<0||base_index>=match_cache->n_base) {
-                consume_match_result(match_cache,&match);
-                svr->prcout++;
-                continue;
-            }
-            {
-                char tr[64],tb[64];
-                time2str(match_cache->rover[0].time,tr,3);
-                time2str(match_cache->base[base_index].time,tb,3);
-                tracet(3,"obs-match: rover=%s base=%s dt=%.3f nrov=%d nbase=%d\n",
-                       tr,tb,match.dt,match_cache->n_rover,match_cache->n_base);
-            }
+        for (i=0;i<fobs[0];i++) { /* for each rover observation data */
             obs.n=0;
-            for (j=0;j<match_cache->rover[0].n&&obs.n<MAXOBS*2;j++) {
-                obs.data[obs.n++]=match_cache->rover[0].data[j];
+            for (j=0;j<svr->obs[0][i].n&&obs.n<MAXOBS*2;j++) {
+                obs.data[obs.n++]=svr->obs[0][i].data[j];
             }
-            for (j=0;j<match_cache->base[base_index].n&&obs.n<MAXOBS*2;j++) {
-                obs.data[obs.n++]=match_cache->base[base_index].data[j];
+            for (j=0;j<svr->obs[1][0].n&&obs.n<MAXOBS*2;j++) {
+                obs.data[obs.n++]=svr->obs[1][0].data[j];
             }
-            consume_match_result(match_cache,&match);
-
             /* carrier phase bias correction */
             if (!strstr(svr->rtk.opt.pppopt,"-DIS_FCB")) {
                 corr_phase_bias(obs.data,obs.n,&svr->nav);
@@ -799,11 +716,11 @@ static void *rtksvrthread(void *arg)
                 timeset(gpst2utc(timeadd(svr->rtk.sol.time,tt)));
                 
                 /* write solution */
-                writesol(svr,0);
+                writesol(svr,i);
             }
             /* if cpu overload, increment obs outage counter and break */
             if ((int)(tickget()-tick)>=svr->cycle) {
-                break;
+                svr->prcout+=fobs[0]-i-1;
             }
         }
         /* send null solution if no solution (1hz) */
@@ -825,7 +742,6 @@ static void *rtksvrthread(void *arg)
         /* sleep until next cycle */
         sleepms(svr->cycle-cputime);
     }
-    free(match_cache);
     free(data);
     for (i=0;i<MAXSTRRTK;i++) strclose(svr->stream+i);
     for (i=0;i<3;i++) {
@@ -1328,173 +1244,4 @@ extern int rtksvrmark(rtksvr_t *svr, const char *name, const char *comment)
     }
     rtksvrunlock(svr);
     return 1;
-}
-/* pop epochs from queue front ------------------------------------------------*/
-static void pop_obs_epoch_front(rtkobs_epoch_t *queue, int *n, int pop_n)
-{
-    if (!queue||!n||*n<=0||pop_n<=0) return;
-
-    if (pop_n>=*n) {
-        *n=0;
-        return;
-    }
-    memmove(queue,queue+pop_n,sizeof(rtkobs_epoch_t)*(*n-pop_n));
-    *n-=pop_n;
-}
-/* push rover/base epoch to matching cache -----------------------------------*/
-static int push_obs_epoch_to_cache(rtkobs_match_cache_t *cache,
-                                   const obs_t *obs, int stream_index)
-{
-    rtkobs_epoch_t *queue;
-    int *nq;
-    int i,pos,nobs,dropped_oldest=0;
-    gtime_t time_obs;
-
-    if (!cache||!obs||obs->n<=0) return 0;
-    time_obs=obs->data[0].time;
-
-    if (!cache->latest_valid||timediff(time_obs,cache->latest_time)>DTTOL) {
-        cache->latest_time=time_obs;
-        cache->latest_valid=1;
-    }
-
-    if (stream_index==0) {
-        queue=cache->rover;
-        nq=&cache->n_rover;
-    }
-    else if (stream_index==1) {
-        queue=cache->base;
-        nq=&cache->n_base;
-    }
-    else return 0;
-
-    if (*nq>=MAXOBSBUF) {
-        dropped_oldest=1;
-        tracet(2,"push_obs_epoch_to_cache: %s queue full, drop oldest epoch\n",
-               stream_index==0?"rover":"base");
-        pop_obs_epoch_front(queue,nq,1);
-    }
-    for (pos=0;pos<*nq;pos++) {
-        if (timediff(obs->data[0].time,queue[pos].time)<-DTTOL) break;
-    }
-    if (pos<*nq) {
-        memmove(queue+pos+1,queue+pos,sizeof(rtkobs_epoch_t)*(*nq-pos));
-    }
-    nobs=obs->n<MAXOBS?obs->n:MAXOBS;
-    queue[pos].time=obs->data[0].time;
-    queue[pos].n=nobs;
-    for (i=0;i<nobs;i++) queue[pos].data[i]=obs->data[i];
-    (*nq)++;
-    return dropped_oldest?-1:1;
-}
-/* try matching rover queue head with nearest base epoch ----------------------*/
-static int try_match_obs_epoch(rtkobs_match_cache_t *cache,
-                               rtkobs_match_result_t *result)
-{
-    const double T_sync=0.1;
-    const double T_pair_max=30.0;
-    const double T_rover_wait_max=30.0;
-    const double T_match_lag=1.0;
-    double obs_lag_s=0.0,dt_prev=0.0,dt_next=0.0;
-    int i,prev=-1,next=-1;
-
-    if (!cache||!result) return 0;
-
-    result->status=OBS_MATCH_WAIT;
-    result->base_index=-1;
-    result->dt=0.0;
-
-    if (cache->n_rover<=0) return 0;
-
-    /* keep at least one old base epoch and discard stale base history */
-    while (cache->n_base>1&&
-           timediff(cache->rover[0].time,cache->base[1].time)>T_pair_max+DTTOL) {
-        pop_obs_epoch_front(cache->base,&cache->n_base,1);
-    }
-
-    if (cache->latest_valid) {
-        obs_lag_s=timediff(cache->latest_time,cache->rover[0].time);
-        if (obs_lag_s<0.0) obs_lag_s=0.0;
-    }
-
-    for (i=0;i<cache->n_base;i++) {
-        double dt=timediff(cache->base[i].time,cache->rover[0].time);
-        if (dt<=DTTOL) {
-            prev=i;
-            dt_prev=dt;
-            continue;
-        }
-        next=i;
-        dt_next=dt;
-        break;
-    }
-
-    /* same-epoch direct pairing */
-    if (prev>=0&&fabs(dt_prev)<=T_sync+DTTOL) {
-        result->status=OBS_MATCH_READY;
-        result->base_index=prev;
-        result->dt=dt_prev;
-        return 1;
-    }
-    if (next>=0&&fabs(dt_next)<=T_sync+DTTOL&&
-        (prev<0||fabs(dt_next)<=fabs(dt_prev)+DTTOL)) {
-        result->status=OBS_MATCH_READY;
-        result->base_index=next;
-        result->dt=dt_next;
-        return 1;
-    }
-
-    /* nearest-neighbor with both-side base epochs */
-    if (prev>=0&&next>=0) {
-        if (fabs(dt_next)<=fabs(dt_prev)+DTTOL) {
-            result->status=OBS_MATCH_READY;
-            result->base_index=next;
-            result->dt=dt_next;
-        }
-        else {
-            result->status=OBS_MATCH_READY;
-            result->base_index=prev;
-            result->dt=dt_prev;
-        }
-        return 1;
-    }
-
-    if (obs_lag_s<T_match_lag-DTTOL) return 0;
-
-    /* startup/single-side case with only future base available */
-    if (prev<0&&next>=0) {
-        if (fabs(dt_next)>T_pair_max+DTTOL||obs_lag_s>T_rover_wait_max+DTTOL) {
-            result->status=OBS_MATCH_DROP;
-            return 1;
-        }
-        result->status=OBS_MATCH_READY;
-        result->base_index=next;
-        result->dt=dt_next;
-        return 1;
-    }
-
-    /* only previous base exists: keep waiting, drop by timeout/threshold */
-    if (prev>=0) {
-        if (fabs(dt_prev)>T_pair_max+DTTOL||obs_lag_s>T_rover_wait_max+DTTOL) {
-            result->status=OBS_MATCH_DROP;
-            return 1;
-        }
-        return 0;
-    }
-
-    if (obs_lag_s>T_rover_wait_max+DTTOL) {
-        result->status=OBS_MATCH_DROP;
-        return 1;
-    }
-    return 0;
-}
-/* consume matching decision from cache ---------------------------------------*/
-static void consume_match_result(rtkobs_match_cache_t *cache,
-                                 const rtkobs_match_result_t *result)
-{
-    if (!cache||!result||cache->n_rover<=0) return;
-
-    (void)result;
-    /* Keep base epochs for potential reuse by subsequent rover epochs. */
-    pop_obs_epoch_front(cache->rover,&cache->n_rover,1);
 }
