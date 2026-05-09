@@ -124,7 +124,7 @@ static double STD(rtk_t *rtk, int i)
     return SQRT(rtk->P[i+i*rtk->nx]);
 }
 /* write solution status for PPP ---------------------------------------------*/
-extern int pppoutstat(rtk_t *rtk, char *buff)
+extern int pppoutstat(rtk_t *rtk, char *buff, int level)
 {
     ssat_t *ssat;
     double tow,pos[3],vel[3],acc[3],*x;
@@ -184,17 +184,23 @@ extern int pppoutstat(rtk_t *rtk, char *buff)
                        rtk->ssat[i].azel[1]*R2D,x[j],STD(rtk,j));
         }
     }
-#ifdef OUTSTAT_AMB
-    /* ambiguity parameters */
-    int k;
-    for (i=0;i<MAXSAT;i++) for (j=0;j<NF(&rtk->opt);j++) {
-        k=IB(i+1,j,&rtk->opt);
-        if (rtk->x[k]==0.0) continue;
+    if (level <= 1) return (int)(p-buff);
+
+    /* Write residuals and status */
+    for (int i=0;i<MAXSAT;i++) {
+        ssat=rtk->ssat+i;
+        if (!ssat->vs) continue;
         satno2id(i+1,id);
-        p+=sprintf(p,"$AMB,%d,%.3f,%d,%s,%d,%.4f,%.4f\n",week,tow,
-                   rtk->sol.stat,id,j+1,x[k],STD(rtk,k));
+        for (int j=0;j<NF(&rtk->opt);j++) {
+            int k=IB(i+1,j,&rtk->opt);
+            p+=sprintf(p,"$SAT,%d,%.3f,%s,%d,%.1f,%.1f,%.4f,%.4f,%d,%.0f,%d,%d,%d,%u,%u,%u,%.2f,%.6f,%.5f\n",
+                       week,tow,id,j+1,ssat->azel[0]*R2D,ssat->azel[1]*R2D,
+                       ssat->resp[j],ssat->resc[j],ssat->vsat[j],ssat->snr_rover[j],
+                       ssat->fix[j],ssat->slip[j]&(LLI_SLIP|LLI_HALFC),ssat->lock[j],ssat->outc[j],
+                       ssat->slipc[j],ssat->rejc[j],k<rtk->nx?rtk->x[k]:0,
+                       k<rtk->nx?rtk->P[k+k*rtk->nx]:0,ssat->icbias[j]);
+        }
     }
-#endif
     return (int)(p-buff);
 }
 /* exclude meas of eclipsing satellite (block IIA) ---------------------------*/
@@ -426,18 +432,11 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         P[i]=obs->P[i]               -dants[i]-dantr[i];
         double P_nobias = P[i];
         if (opt->sateph==EPHOPT_SSRAPC||opt->sateph==EPHOPT_SSRCOM) {
-            /* select SSR code correction based on code */
-            if (sys==SYS_GPS)
-                ix=(i==0?CODE_L1W-1:CODE_L2W-1);
-            else if (sys==SYS_GLO)
-                ix=(i==0?CODE_L1P-1:CODE_L2P-1);
-            else if (sys==SYS_GAL)
-                ix=(i==0?CODE_L1X-1:CODE_L7X-1);
             /* apply SSR correction */
-            P[i]+=(nav->ssr[obs->sat-1].cbias[obs->code[i]-1]-nav->ssr[obs->sat-1].cbias[ix]);
+            P[i]-=nav->ssr[obs->sat-1].cbias[obs->code[i]-1];
         }
         else {   /* apply code bias corrections from file */
-            P[i]-=code2bias(nav,sys,obs->sat,obs->code[i],0); /* differential bias*/
+            P[i]-=code2bias(nav,sys,obs->sat,obs->code[i],1); /* absolute bias*/
         }
         trace(4,"sys=%d sat=%d frq=%d, P: %.3f->%.3f, dt=%.3f\n",sys,obs->sat,i,P_nobias,P[i],(P[i]-P_nobias)/(1E-9*CLIGHT));
     }
@@ -450,6 +449,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
 
     if (L[0]!=0.0&&L[frq2]!=0.0) *Lc=C1*L[0]+C2*L[frq2];
     if (P[0]!=0.0&&P[frq2]!=0.0) *Pc=C1*P[0]+C2*P[frq2];
+    trace(4,"corr_meas: sat=%d f2=%d, Lc=%.3f Pc=%.3f\n",obs->sat,frq2,*Lc,*Pc);
 }
 /* detect cycle slip by LLI --------------------------------------------------*/
 static void detslp_ll(rtk_t *rtk, const obsd_t *obs, int n)
