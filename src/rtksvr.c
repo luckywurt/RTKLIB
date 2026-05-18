@@ -312,37 +312,21 @@ static void update_antpos(rtksvr_t *svr, int index) {
 /* update ssr corrections ----------------------------------------------------*/
 static void update_ssr(rtksvr_t *svr, int index)
 {
-    int i,sys,prn,iode;
+    for (int i = 0; i < MAXSAT; i++) {
+      if (!svr->rtcm[index].ssr[i].update) continue;
+            
+      // Check consistency between iods of orbit and clock.
+      if (svr->rtcm[index].ssr[i].iod[0] != svr->rtcm[index].ssr[i].iod[1])
+        continue;
 
-        for (i=0;i<MAXSAT;i++) {
-            if (!svr->rtcm[index].ssr[i].update) continue;
-            
-            /* check consistency between iods of orbit and clock */
-        if (svr->rtcm[index].ssr[i].iod[0]!=svr->rtcm[index].ssr[i].iod[1]) {
-            continue;
-        }
-            svr->rtcm[index].ssr[i].update=0;
-            
-            iode=svr->rtcm[index].ssr[i].iode;
-            sys=satsys(i+1,&prn);
-            
-            /* check corresponding ephemeris exists */
-            if (sys==SYS_GPS||sys==SYS_GAL||sys==SYS_QZS) {
-                if (svr->nav.eph[i       ].iode!=iode&&
-                    svr->nav.eph[i+MAXSAT].iode!=iode) {
-                    continue;
-                }
-            }
-            else if (sys==SYS_GLO) {
-                if (svr->nav.geph[prn-1          ].iode!=iode&&
-                    svr->nav.geph[prn-1+MAXPRNGLO].iode!=iode) {
-                    continue;
-                }
-            }
-            svr->nav.ssr[i]=svr->rtcm[index].ssr[i];
-        }
-        svr->nmsg[index][7]++;
+      svr->nav.ssr[i] = svr->rtcm[index].ssr[i];
+      svr->rtcm[index].ssr[i].update = 0;
     }
+    svr->nmsg[index][7]++;
+
+    /* update vtec */
+    svr->nav.vtec=svr->rtcm[index].nav.vtec;
+}
 /* update rtk server struct --------------------------------------------------*/
 static void update_svr(rtksvr_t *svr, int ret, obs_t *obs, nav_t *nav,
                        int ephsat, int ephset, sbsmsg_t *sbsmsg, int index,
@@ -1012,6 +996,8 @@ extern int rtksvrstart(rtksvr_t *svr, int cycle, int buffsize, int *strs,
             svr->rtcm[i].time=strs[i]==STR_FILE?strgettime(svr->stream+i):time;
         }
     }
+    svr->rtk.vtec_used=0;
+
     /* sync input streams */
     strsync(svr->stream,svr->stream+1);
     strsync(svr->stream,svr->stream+2);
@@ -1143,31 +1129,27 @@ extern void rtksvrclosestr(rtksvr_t *svr, int index)
 *          int     *vsat    O  valid satellite flag
 * return : number of satellites
 *-----------------------------------------------------------------------------*/
-extern int rtksvrostat(rtksvr_t *svr, int rcv, gtime_t *time, int *sat,
-                       double *az, double *el, int **snr, int *vsat)
+extern int rtksvrostat(rtksvr_t *svr, int rcv, gtime_t *time, int sat[MAXSAT],
+                       double *az, double *el, int snr[MAXSAT][NFREQ], int vsat[MAXSAT][NFREQ])
 {
-    int i,j,ns;
-    
     tracet(4,"rtksvrostat: rcv=%d\n",rcv);
     
     if (!svr->state) return 0;
     rtksvrlock(svr);
-    ns=svr->obs[rcv][0].n;
+    int ns=svr->obs[rcv][0].n;
     if (ns>0) {
         *time=svr->obs[rcv][0].data[0].time;
     }
-    for (i=0;i<ns;i++) {
+    for (int i=0;i<ns;i++) {
         sat [i]=svr->obs[rcv][0].data[i].sat;
         az  [i]=svr->rtk.ssat[sat[i]-1].azel[0];
         el  [i]=svr->rtk.ssat[sat[i]-1].azel[1];
-        for (j=0;j<NFREQ;j++) {
-            snr[i][j]=(int)(svr->obs[rcv][0].data[i].SNR[j]);
-        }
-        if (svr->rtk.sol.stat==SOLQ_NONE||svr->rtk.sol.stat==SOLQ_SINGLE) {
-            vsat[i]=svr->rtk.ssat[sat[i]-1].vs;
-        }
-        else {
-            vsat[i]=svr->rtk.ssat[sat[i]-1].vsat[0];
+        for (int j=0;j<NFREQ;j++) {
+            snr[i][j] = (int)(svr->obs[rcv][0].data[i].SNR[j] + 0.5);
+            if (svr->rtk.sol.stat == SOLQ_NONE || svr->rtk.sol.stat == SOLQ_SINGLE)
+              vsat[i][j] = svr->rtk.ssat[sat[i] - 1].vs;
+            else
+              vsat[i][j] = svr->rtk.ssat[sat[i] - 1].vsat[j];
         }
     }
     rtksvrunlock(svr);

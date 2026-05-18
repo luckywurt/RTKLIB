@@ -410,8 +410,14 @@ void __fastcall TMonitorDialog::ShowRtk(void)
 	rtksvrunlock(&rtksvr); // unlock
 	
 	for (j=k=0;j<MAXSAT;j++) {
-		if (rtk->opt.mode==PMODE_SINGLE&&!rtk->ssat[j].vs) continue;
-		if (rtk->opt.mode!=PMODE_SINGLE&&!rtk->ssat[j].vsat[0]) continue;
+		if (rtk->opt.mode == PMODE_SINGLE) {
+                  if (!rtk->ssat[j].vs) continue;
+                } else {
+                  int any = 0;
+                  for (int fi = 0; fi < NFREQ; fi++)
+                    if (rtk->ssat[j].vsat[fi]) { any = 1; break; }
+                  if (!any) continue;
+                }
 		azel[  k*2]=rtk->ssat[j].azel[0];
 		azel[1+k*2]=rtk->ssat[j].azel[1];
 		k++;
@@ -740,8 +746,13 @@ void __fastcall TMonitorDialog::ShowSat(void)
 	Label->Caption="";
 	
 	for (i=0;i<MAXSAT;i++) {
-		ssat=rtk->ssat+i;
-		vsat[i]=ssat->vs;
+                if (rtk->opt.mode == PMODE_SINGLE) {
+                  vsat[i] = rtk->ssat[i].vs;
+                } else {
+                  vsat[i] = 0;
+                  for (int fi = 0; fi < NFREQ; fi++)
+                    if (rtk->ssat[i].vsat[fi]) { vsat[i] = 1; break; }
+                }
 	}
 	for (i=0,n=1;i<MAXSAT;i++) {
 		if (!(satsys(i+1,NULL)&sys)) continue;
@@ -764,7 +775,7 @@ void __fastcall TMonitorDialog::ShowSat(void)
 		if (SelSat->ItemIndex==1&&!vsat[i]) continue;
 		satno2id(i+1,id);
 		Tbl->Cells[j++][n]=id;
-		Tbl->Cells[j++][n]=ssat->vs?"OK":"-";
+		Tbl->Cells[j++][n]=vsat[i]?"OK":"-";
 		az=ssat->azel[0]*R2D; if (az<0.0) az+=360.0;
 		el=ssat->azel[1]*R2D;
 		Tbl->Cells[j++][n]=s.sprintf("%.1f",az);
@@ -991,7 +1002,7 @@ void __fastcall TMonitorDialog::SetObs(void)
 void __fastcall TMonitorDialog::ShowObs(void)
 {
 	AnsiString s;
-	char tstr[40],id[8],*code;
+	char tstr[40],id[8];
 	int i,j,k,n=0,nex=ObsMode?NEXOBS:0,sys=sys_tbl[SelSys->ItemIndex];
 	
         obsd_t *obs = static_cast<obsd_t *>(calloc(MAXOBS * 2, sizeof(obsd_t)));
@@ -1023,7 +1034,7 @@ void __fastcall TMonitorDialog::ShowObs(void)
 		Tbl->Cells[j++][i+1]=id;
 		Tbl->Cells[j++][i+1]=s.sprintf("(%d)",obs[i].rcv);
 		for (k=0;k<NFREQ+nex;k++) {
-			code=code2obs(obs[i].code[k]);
+                        const char *code=code2obs(obs[i].code[k]);
 			if (*code) Tbl->Cells[j++][i+1]=s.sprintf("%s",code);
 			else       Tbl->Cells[j++][i+1]="-";
 		}
@@ -1918,7 +1929,7 @@ void __fastcall TMonitorDialog::SetRtcmSsr(void)
 		"Phase Bias(m)"
 	};
 	int i,width[]={
-		25,30,30,30,30,25,15,115,50,50,50,50,50,50,50,50,50,50,180,180
+		25,30,30,30,30,25,15,115,50,50,50,50,50,50,50,50,50,50,250,250
 	};
 	char *code;
 

@@ -388,28 +388,27 @@ static inline void initx(rtk_t *rtk, double xi, double var, int i)
     rtk->P[i+i*rtk->nx]=var;
 }
 /* geometry-free phase measurement -------------------------------------------*/
-static double gfmeas(const obsd_t *obs, const nav_t *nav)
+static double gfmeas(const obsd_t *obs, const nav_t *nav, int f2)
 {
     double freq1,freq2;
 
     freq1=sat2freq(obs->sat,obs->code[0],nav);
-    freq2=sat2freq(obs->sat,obs->code[1],nav);
-    if (freq1==0.0||freq2==0.0||obs->L[0]==0.0||obs->L[1]==0.0) return 0.0;
-    return (obs->L[0]/freq1-obs->L[1]/freq2)*CLIGHT;
+    freq2=sat2freq(obs->sat,obs->code[f2],nav);
+    if (freq1==0.0||freq2==0.0||obs->L[0]==0.0||obs->L[f2]==0.0) return 0.0;
+    return (obs->L[0]/freq1-obs->L[f2]/freq2)*CLIGHT;
 }
 /* Melbourne-Wubbena linear combination --------------------------------------*/
-static double mwmeas(const obsd_t *obs, const nav_t *nav)
+static double mwmeas(const obsd_t *obs, const nav_t *nav, int f2)
 {
     double freq1,freq2;
 
     freq1=sat2freq(obs->sat,obs->code[0],nav);
-    freq2=sat2freq(obs->sat,obs->code[1],nav);
+    freq2=sat2freq(obs->sat,obs->code[f2],nav);
 
-    if (freq1==0.0||freq2==0.0||obs->L[0]==0.0||obs->L[1]==0.0||
-        obs->P[0]==0.0||obs->P[1]==0.0) return 0.0;
-    trace(3,"mwmeas: %12.1f %12.1f %15.3f %15.3f %15.3f %15.3f %d %d\n",freq1,freq2,obs->L[0],obs->L[1],obs->P[0],obs->P[1],obs->code[0],obs->code[1]);
-    return (obs->L[0]-obs->L[1])*CLIGHT/(freq1-freq2)-
-           (freq1*obs->P[0]+freq2*obs->P[1])/(freq1+freq2);
+    if (freq1==0.0||freq2==0.0||obs->L[0]==0.0||obs->L[f2]==0.0||
+        obs->P[0]==0.0||obs->P[f2]==0.0) return 0.0;
+    return (obs->L[0]-obs->L[f2])*CLIGHT/(freq1-freq2)-
+           (freq1*obs->P[0]+freq2*obs->P[f2])/(freq1+freq2);
 }
 /* antenna corrected measurements --------------------------------------------*/
 static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
@@ -470,49 +469,57 @@ static void detslp_ll(rtk_t *rtk, const obsd_t *obs, int n)
 /* detect cycle slip by geometry free phase jump -----------------------------*/
 static void detslp_gf(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 {
-    double g0,g1;
-    int i,j;
+    double gf0,gf1;
+    int i,k,sat;
 
     trace(4,"detslp_gf: n=%d\n",n);
 
+    if (rtk->opt.thresslip==0) return;  /* return if check disabled */
     for (i=0;i<n&&i<MAXOBS;i++) {
+        sat=obs[i].sat;
+        for (k=1;k<rtk->opt.nf;k++) {
+            /* skip check if slip already detected */
+            if (rtk->ssat[sat-1].slip[k]&LLI_SLIP) continue;
+            /* calc SD geomotry free LC of phase between freq0 and freqk */
+            if ((gf1=gfmeas(obs+i,nav,k))==0.0) continue;
 
-        if ((g1=gfmeas(obs+i,nav))==0.0) continue;
+            gf0=rtk->ssat[sat-1].gf[k-1];    /* retrieve previous gf */
+            rtk->ssat[sat-1].gf[k-1]=gf1;    /* save current gf for next epoch */
 
-        g0=rtk->ssat[obs[i].sat-1].gf[0];
-        rtk->ssat[obs[i].sat-1].gf[0]=g1;
-
-        trace(4,"detslip_gf: sat=%2d gf0=%8.3f gf1=%8.3f\n",obs[i].sat,g0,g1);
-
-        if (g0!=0.0&&fabs(g1-g0)>rtk->opt.thresslip) {
-            trace(3,"detslip_gf: slip detected sat=%2d gf=%8.3f->%8.3f\n",
-                  obs[i].sat,g0,g1);
-
-            for (j=0;j<rtk->opt.nf;j++) rtk->ssat[obs[i].sat-1].slip[j]|=LLI_SLIP;
+            if (gf0!=0.0&&fabs(gf1-gf0)>rtk->opt.thresslip) {
+                rtk->ssat[sat-1].slip[0]|=LLI_SLIP;
+                rtk->ssat[sat-1].slip[k]|=LLI_SLIP;
+                trace(3,"slip detected GF jump (sat=%2d L1-L%d dGF=%.3f)\n",
+                    sat,k+1,gf0-gf1);
+            }
         }
     }
 }
 /* detect slip by Melbourne-Wubbena linear combination jump ------------------*/
 static void detslp_mw(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 {
-    double w0,w1;
-    int i,j;
+    double mw0,mw1;
+    int i,j,k,sat;
 
     trace(4,"detslp_mw: n=%d\n",n);
 
     for (i=0;i<n&&i<MAXOBS;i++) {
-        if ((w1=mwmeas(obs+i,nav))==0.0) continue;
+        sat=obs[i].sat;
+        for (k=1;k<rtk->opt.nf;k++) {
+            /* skip check if slip already detected */
+            if (rtk->ssat[sat-1].slip[k]&LLI_SLIP) continue;
+            /* calc MW LC of phase between freq0 and freqk */
+            if ((mw1=mwmeas(obs+i,nav,k))==0.0) continue;
 
-        w0=rtk->ssat[obs[i].sat-1].mw[0];
-        rtk->ssat[obs[i].sat-1].mw[0]=w1;
+            mw0=rtk->ssat[sat-1].mw[k-1];    /* retrieve previous mw */
+            rtk->ssat[sat-1].mw[k-1]=mw1;    /* save current mw for next epoch */
 
-        trace(4,"detslip_mw: sat=%2d mw0=%8.3f mw1=%8.3f\n",obs[i].sat,w0,w1);
-
-        if (w0!=0.0&&fabs(w1-w0)>THRES_MW_JUMP) {
-            trace(3,"detslip_mw: slip detected sat=%2d mw=%8.3f->%8.3f\n",
-                  obs[i].sat,w0,w1);
-
-            for (j=0;j<rtk->opt.nf;j++) rtk->ssat[obs[i].sat-1].slip[j]|=LLI_SLIP;
+            if (mw0!=0.0&&fabs(mw1-mw0)>THRES_MW_JUMP) {
+                rtk->ssat[sat-1].slip[0]|=LLI_SLIP;
+                rtk->ssat[sat-1].slip[k]|=LLI_SLIP;
+                trace(3,"slip detected MW jump (sat=%2d L1-L%d dMW=%.3f)\n",
+                    sat,k+1,mw0-mw1);
+            }
         }
     }
 }
@@ -659,7 +666,7 @@ static void udtrop_ppp(rtk_t *rtk)
 /* temporal update of ionospheric parameters ---------------------------------*/
 static void udiono_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 {
-    double freq1,freq2,ion,sinel,pos[3],*azel;
+    double freq1,freq2,ion,sinel,pos[3],*azel,var=VAR_IONO;
     char *p;
     int i,j,f2,gap_resion=GAP_RESION,sat;
 
@@ -675,27 +682,56 @@ static void udiono_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
             rtk->x[j]=0.0;
         }
     }
+    /* reset ionosphere states if VTEC corrections just became available */
+    if (rtk->vtec_used==0&&nav->vtec.nlay>0) {
+        for (i=0;i<MAXSAT;i++) {
+            rtk->x[II(i+1,&rtk->opt)]=0.0;
+        }
+        rtk->vtec_used=1;  // indicate that vtec coeffs have been used
+    }
     for (i=0;i<n;i++) {
         sat=obs[i].sat;
         j=II(sat,&rtk->opt);
-        if (rtk->x[j]==0.0) {
+        if (rtk->x[j]==0.0&&(int)rtk->ssat[i].outc[0]<=gap_resion) {
             /* initialize ionosphere delay estimates if zero */
-            f2=seliflc(rtk->opt.nf,satsys(sat,NULL));
-            freq1=sat2freq(sat,obs[i].code[0],nav);
-            freq2=sat2freq(sat,obs[i].code[f2],nav);
-            if (obs[i].P[0]==0.0||obs[i].P[f2]==0.0||freq1==0.0||freq2==0.0) {
-                continue;
-            }
-            /* use pseudorange difference adjusted by freq for initial estimate */
-            ion=(obs[i].P[0]-obs[i].P[f2])/(SQR(FREQL1/freq1)-SQR(FREQL1/freq2));
             ecef2pos(rtk->sol.rr,pos);
             azel=rtk->ssat[sat-1].azel;
+            f2=seliflc(rtk->opt.nf,satsys(sat,NULL));
+            if (testsnr(0,0,azel[1],obs[i].SNR[0],&rtk->opt.snrmask)) continue;
+            freq1=sat2freq(sat,obs[i].code[0],nav);
+            freq2=sat2freq(sat,obs[i].code[f2],nav);
+            if (freq1==0.0) continue;
+            if (nav->vtec.nlay>0) {  /* use VTEC if corrections available */
+                ionvtec(obs[i].time,nav,pos,azel,freq1,&ion,&var);
+                if (var==0.0) continue;
+            } else {
+                if (obs[i].P[0]==0.0||obs[i].P[f2]==0.0||freq2==0.0||
+                        testsnr(0,f2,azel[1],obs[i].SNR[f2],&rtk->opt.snrmask)) {
+                    continue;
+                }
+                /* use pseudorange difference adjusted by freq for initial estimate */
+                int sys=satsys(sat,NULL);
+                double P0_corr=obs[i].P[0];
+                double Pf_corr=obs[i].P[f2];
+                if (&rtk->opt.sateph==EPHOPT_SSRAPC||&rtk->opt.sateph==EPHOPT_SSRCOM) {
+                    /* apply SSR correction */
+                    P0_corr-=nav->ssr[obs->sat-1].cbias[obs[i].code[0]-1];
+                    Pf_corr-=nav->ssr[obs->sat-1].cbias[obs[i].code[f2]-1];
+                }
+                else {   /* apply code bias corrections from file */
+                    P0_corr-=code2bias(nav,sys,sat,obs[i].code[0],1);
+                    Pf_corr-=code2bias(nav,sys,sat,obs[i].code[f2],1);
+                }
+                ion=(P0_corr-Pf_corr)/(SQR(FREQL1/freq1)-SQR(FREQL1/freq2));
+                trace(3,"P1=%.3f P2=%.3f frq1=%.1f frq2=%.1f\n",obs[i].P[0],obs[i].P[f2],freq1,freq2);
+                var=VAR_IONO;
+            }
             /* adjust delay estimate by path length */
             ion/=ionmapf(pos,azel);
-            initx(rtk,ion,VAR_IONO,j);
-            trace(4,"ion init: sat=%d ion=%.4f\n",sat,ion);
+            initx(rtk,ion,var,j);
+            trace(3,"ion init: sat=%d ion=%.4f var=%.1f\n",sat,ion,var);
         }
-        else {
+        else { /* temporal update */
             sinel=sin(MAX(rtk->ssat[sat-1].azel[1],5.0*D2R));
             /* update variance of delay state */
             rtk->P[j+j*rtk->nx]+=SQR(rtk->opt.prn[1]/sinel)*fabs(rtk->tt);
@@ -739,7 +775,7 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     detslp_mw(rtk,obs,n,nav);
 
     for (f=0;f<NF(&rtk->opt);f++) {
-
+        offset=0;
         /* reset phase-bias if expire obs outage counter */
         for (i=0;i<MAXSAT;i++) {
             if (++rtk->ssat[i].outc[f]>(uint32_t)rtk->opt.maxout||
@@ -757,7 +793,8 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 
             if (rtk->opt.ionoopt==IONOOPT_IFLC) {
                 bias[i]=Lc-Pc;
-                slip[i]=rtk->ssat[sat-1].slip[0]||rtk->ssat[sat-1].slip[1];
+                int f2=seliflc(rtk->opt.nf,rtk->ssat[sat-1].sys);
+                slip[i]=rtk->ssat[sat-1].slip[0]||rtk->ssat[sat-1].slip[f2];
             }
             else if (L[f]!=0.0&&P[f]!=0.0) {
                 freq1=sat2freq(sat,obs[i].code[0],nav);
@@ -794,6 +831,7 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 
             /* reinitialize phase-bias if detecting cycle slip */
             initx(rtk,bias[i],VAR_BIAS,IB(sat,f,&rtk->opt));
+            trace(3,"init bias: sat=%d frq=%d\n", sat,f);
 
             /* reset fix flags */
             for (k=0;k<MAXSAT;k++) rtk->ambc[sat-1].flags[k]=0;

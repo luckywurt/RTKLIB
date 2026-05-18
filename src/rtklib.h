@@ -753,6 +753,18 @@ typedef struct {        /* TEC grid type */
     float *rms;         /* RMS values (tecu) */
 } tec_t;
 
+typedef struct {
+    double udint;
+    double qi;
+    int iod;
+    int nlay;
+    int nmax[4];
+    int mmax[4];
+    double hgt[4];
+    double cosC[4][16][16];
+    double sinC[4][16][16];
+} vtec_t;
+
 typedef struct {        /* SBAS message type */
     int week,tow;       /* reception time */
     uint8_t prn,rcv;    /* SBAS satellite PRN,receiver number */
@@ -837,7 +849,6 @@ typedef struct {        /* SSR correction type */
     double hrclk;       /* high-rate clock correction (m) */
     float  cbias[MAXCODE]; /* code biases (m) */
     double pbias[MAXCODE]; /* phase biases (m) */
-    float  stdpb[MAXCODE]; /* std-dev of phase biases (m) */
     double yaw_ang,yaw_rate; /* yaw angle and yaw rate (deg,deg/s) */
     uint8_t update;     /* update flag (0:no update,1:update) */
 } ssr_t;
@@ -872,6 +883,7 @@ typedef struct {        /* navigation data type */
     double ion_irn[8];  /* IRNSS iono model parameters {a0,a1,a2,a3,b0,b1,b2,b3} */
     int glo_fcn[32];    /* GLONASS FCN + 8 */
     double cbias[MAXSAT][NFREQ][MAX_CODE_BIASES]; /* satellite code biases] (m) */
+    vtec_t vtec;        /* ionosphere VTEC coefficients */
     pcv_t pcvs[MAXSAT]; /* satellite antenna pcv */
     sbssat_t sbssat;    /* SBAS satellite corrections */
     sbsion_t sbsion[MAXBAND+1]; /* SBAS ionosphere corrections */
@@ -1222,8 +1234,9 @@ typedef struct {        /* RTK control/result type */
     prcopt_t opt;       /* processing options */
     int initial_mode;   /* initial positioning mode */
     int epoch;          /* epoch number */
-    int intpres_nb;     // Time interpolation of residuals, number of previous base observations.
-    obsd_t intpres_obsb[MAXOBS]; // Time interpolation of residuals, previous base observations.
+    int intpres_nb;     /* Time interpolation of residuals, number of previous base observations */
+    int vtec_used;      /* indicates VTEC coeffs have been used to init ion states */
+    obsd_t intpres_obsb[MAXOBS]; /* Time interpolation of residuals, previous base observations */
 } rtk_t;
 
 typedef struct {        /* receiver raw data control type */
@@ -1393,7 +1406,7 @@ EXPORT int  satsys  (int sat, int *prn);
 EXPORT int  satid2no(const char *id);
 EXPORT void satno2id(int sat, char id[8]);
 EXPORT uint8_t obs2code(const char *obs);
-EXPORT char *code2obs(uint8_t code);
+EXPORT const char *code2obs(uint8_t code);
 EXPORT double code2freq(int sys, uint8_t code, int fcn);
 EXPORT double sat2freq(int sat, uint8_t code, const nav_t *nav);
 EXPORT int  code2idx(int sys, uint8_t code);
@@ -1571,6 +1584,8 @@ EXPORT int iontec(gtime_t time, const nav_t *nav, const double *pos,
 EXPORT void readtec(const char *file, nav_t *nav, int opt);
 EXPORT int ionocorr(gtime_t time, const nav_t *nav, int sat, const double *pos,
                     const double *azel, int ionoopt, double *ion, double *var);
+EXPORT int ionvtec(gtime_t time, const nav_t *nav, const double *pos,
+                   const double *azel, double freq, double *delay, double *var);
 EXPORT int tropcorr(gtime_t time, const nav_t *nav, const double *pos,
                     const double *azel, int tropopt, double *trp, double *var);
 EXPORT int seliflc(int optnf, int sys);
@@ -1897,8 +1912,8 @@ EXPORT int  rtksvropenstr(rtksvr_t *svr, int index, int str, const char *path,
 EXPORT void rtksvrclosestr(rtksvr_t *svr, int index);
 EXPORT void rtksvrlock  (rtksvr_t *svr);
 EXPORT void rtksvrunlock(rtksvr_t *svr);
-EXPORT int  rtksvrostat (rtksvr_t *svr, int type, gtime_t *time, int *sat,
-                         double *az, double *el, int **snr, int *vsat);
+EXPORT int  rtksvrostat (rtksvr_t *svr, int type, gtime_t *time, int sat[MAXSAT],
+                         double *az, double *el, int snr[MAXSAT][NFREQ], int vsat[MAXSAT][NFREQ]);
 EXPORT void rtksvrsstat (rtksvr_t *svr, int *sstat, char *msg);
 EXPORT int  rtksvrmark(rtksvr_t *svr, const char *name, const char *comment);
 

@@ -464,8 +464,14 @@ void MonitorDialog::showRtk()
     rtksvrunlock(rtksvr); // unlock
 
     for (j = k = 0; j < MAXSAT; j++) {
-        if (rtk->opt.mode == PMODE_SINGLE && !rtk->ssat[j].vs) continue;
-        if (rtk->opt.mode != PMODE_SINGLE && !rtk->ssat[j].vsat[0]) continue;
+        if (rtk->opt.mode == PMODE_SINGLE) {
+          if (!rtk->ssat[j].vs) continue;
+        } else {
+          int any = 0;
+          for (int fi = 0; fi < NFREQ; fi++)
+            if (rtk->ssat[j].vsat[fi]) { any = 1; break; }
+          if (!any) continue;
+        }
         azel[k * 2] = rtk->ssat[j].azel[0];
         azel[k * 2 + 1] = rtk->ssat[j].azel[1];
 		k++;
@@ -792,8 +798,13 @@ void MonitorDialog::showSat()
     rtksvrunlock(rtksvr);
 
     for (i = 0; i < MAXSAT; i++) {
-        ssat = rtk->ssat + i;
-        vsat[i] = ssat->vs;
+        if (rtk->opt.mode == PMODE_SINGLE) {
+          vsat[i] = rtk->ssat[i].vs;
+        } else {
+          vsat[i] = 0;
+          for (int fi = 0; fi < NFREQ; fi++)
+            if (rtk->ssat[i].vsat[fi]) { vsat[i] = 1; break; }
+        }
     }
 
     for (i = 0, nsat = 0; i < MAXSAT; i++) {
@@ -821,7 +832,7 @@ void MonitorDialog::showSat()
         if (ui->cBSelectSatellites->currentIndex() == 1 && !vsat[i]) continue;
         satno2id(i + 1, id);
         ui->tWConsole->item(n, j++)->setText(id);
-        ui->tWConsole->item(n, j++)->setText(ssat->vs ? tr("OK") : tr("-"));
+        ui->tWConsole->item(n, j++)->setText(vsat[i] ? tr("OK") : tr("-"));
         az = ssat->azel[0] * R2D; if (az < 0.0) az += 360.0;
         el = ssat->azel[1] * R2D;
         ui->tWConsole->item(n, j++)->setText(QString::number(az, 'f', 1));
@@ -1065,7 +1076,7 @@ void MonitorDialog::setObservations()
 //---------------------------------------------------------------------------
 void MonitorDialog::showObservations()
 {
-    char tstr[40], id[8], *code;
+    char tstr[40], id[8];
     int i, k, n = 0, nex = ui->cBSelectObservation->currentIndex() ? NEXOBS : 0;
     int sys = sys_tbl[ui->cBSelectNavigationSystems->currentIndex()];
     int std = ui->cBSelectObservation->currentIndex();
@@ -1107,7 +1118,7 @@ void MonitorDialog::showObservations()
         ui->tWConsole->item(i, j++)->setText(id);
         ui->tWConsole->item(i, j++)->setText(QString("(%1)").arg(obs[i].rcv));
         for (k = 0; k < NFREQ + nex; k++) {
-            code = code2obs(obs[i].code[k]);
+            const char *code = code2obs(obs[i].code[k]);
             if (*code) ui->tWConsole->item(i, j++)->setText(code);
             else ui->tWConsole->item(i, j++)->setText("-");
         }
@@ -2063,7 +2074,7 @@ void MonitorDialog::setRtcmSsr()
     header	<< tr("SAT") << tr("Status") << tr("UDI (s)") << tr("UDHR (s)") << tr("IOD") << tr("URA") << tr("Datum") << tr("T0")
             << tr("D0-A (m)") << tr("D0-C (m)") << tr("D0-R (m)") << tr("D1-A (mm/s)") << tr("D1-C (mm/s)") << tr("D1-R (mm/s)")
             << tr("C0 (m)") << tr("C1 (mm/s)") << tr("C2 (mm/s²)") << tr("C-HR (m)") << tr("Code Bias (m)") << tr("Phase Bias (m)");
-    int i, width[] = { 46, 60, 70, 90, 30, 25, 70, 115, 90, 90, 90, 120, 120, 120, 90, 120, 120, 120, 200, 200 };
+    int i, width[] = { 46, 60, 70, 90, 30, 25, 70, 115, 90, 90, 90, 120, 120, 120, 90, 120, 120, 120, 400, 400 };
 
     ui->tWConsole->setColumnCount(20);
     ui->tWConsole->setRowCount(0);
