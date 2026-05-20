@@ -52,6 +52,12 @@ if(WIN32)
   target_link_libraries(pos2kml wsock32 ws2_32 winmm)
 endif()
 
+# 复制rtklib库文件到rnx2rtkp可执行文件所在目录
+add_custom_command(TARGET rnx2rtkp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:rtklib>
+        $<TARGET_FILE_DIR:rnx2rtkp>
+)
 
 ### define tests
 # convbin

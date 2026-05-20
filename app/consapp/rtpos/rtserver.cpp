@@ -165,6 +165,25 @@ bool RtServer::start(int cycle, int buffsize, int *strs,
     // 输出头
     for (i=3;i<5;i++) writesolhead(m_svr.stream+i, m_svr.solopt+(i-3), prcopt);
 
+    rtkclosestat();
+    if (solopt[0].sstat>0||solopt[1].sstat>0) {
+        char statfile[1024],*p;
+        int level=solopt[0].sstat>0?solopt[0].sstat:solopt[1].sstat;
+
+        if (strs[3]==STR_FILE&&paths[3]&&*paths[3]) {
+            strcpy(statfile,paths[3]);
+        }
+        else if (strs[4]==STR_FILE&&paths[4]&&*paths[4]) {
+            strcpy(statfile,paths[4]);
+        }
+        else {
+            strcpy(statfile,"rtksvr_%Y%m%d%h%M.stat");
+        }
+        if ((p=strstr(statfile,"::"))) *p='\0';
+        strcat(statfile,".stat");
+        rtkopenstat(statfile,level);
+    }
+
     // 启动线程，直接使用 pthread，因为这是 Android 项目
     if (pthread_create(&m_svr.thread,NULL,
                        [](void* arg)->void*{ ((RtServer*)arg)->solverThread(); return nullptr; },
@@ -190,6 +209,7 @@ void RtServer::stop(const char **cmds) {
     // 内部队列清空
     std::lock_guard<std::mutex> lk(m_qmtx);
     m_q.clear();
+    rtkclosestat();
     resetObsMatchCache();
 }
 
@@ -883,6 +903,22 @@ void RtServer::solverThread() {
     for (cycle=0; svr->state; cycle++) {
         tick=tickget();
 
+        auto runRtkPos = [&](int solIndex) -> bool {
+            if (!strstr(svr->rtk.opt.pppopt,"-DIS_FCB")) {
+                corr_phase_bias(obs.data,obs.n,&svr->nav);
+            }
+            rtksvrlock(svr);
+            rtkpos(&svr->rtk,obs.data,obs.n,&svr->nav);
+            rtksvrunlock(svr);
+
+            if (svr->rtk.sol.stat!=SOLQ_NONE) {
+                tt=(int)(tickget()-tick)/1000.0+DTTOL;
+                timeset(gpst2utc(timeadd(svr->rtk.sol.time,tt)));
+                writesol(svr,solIndex);
+            }
+            return (int)(tickget()-tick)<svr->cycle;
+        };
+
         for (i=0;i<3;i++) {
             if (m_roverInternal && i==0) continue; // rover internal mode uses queue
             p=svr->buff[i]+svr->nb[i]; q=svr->buff[i]+svr->buffsize;
@@ -920,18 +956,45 @@ void RtServer::solverThread() {
             }
             for (i=0;i<3;i++) svr->rtk.opt.rb[i]=svr->rb_ave[i];
         }
-        // 先把本轮新解码出的 rover/base 历元压入匹配缓存
-        for (i=0;i<fobs[0];i++) {
-            if (pushObsToMatchCache(&svr->obs[0][i],0)<0) {
-                svr->prcout++;
+        const bool relativeMode = svr->rtk.opt.mode>=PMODE_DGPS&&svr->rtk.opt.mode<=PMODE_FIXED;
+        if (!relativeMode) {
+            // 非相对定位模式不需要基站历元，保持原 rtksvr 的 rover-only 解算节奏。
+            for (i=0;i<fobs[0];i++) {
+                obs.n=0;
+                for (j=0;j<svr->obs[0][i].n&&obs.n<MAXOBS*2; j++) {
+                    obs.data[obs.n++]=svr->obs[0][i].data[j];
+                }
+                if (obs.n<=0) continue;
+                if (!runRtkPos(0)) {
+                    svr->prcout+=fobs[0]-i-1;
+                    break;
+                }
+            }
+        } else if (svr->nmeareq==2&&norm(svr->rtk.sol.rr,3)<=0.0&&fobs[0]>0) {
+            // CORS 单点解请求需要先由 rover-only 解出初始坐标，之后 send_nmea 才能发送 GGA。
+            for (i=0;i<fobs[0]&&norm(svr->rtk.sol.rr,3)<=0.0;i++) {
+                obs.n=0;
+                for (j=0;j<svr->obs[0][i].n&&obs.n<MAXOBS*2; j++) {
+                    obs.data[obs.n++]=svr->obs[0][i].data[j];
+                }
+                if (obs.n<=0) continue;
+                if (!runRtkPos(0)) break;
             }
         }
-        for (i=0;i<fobs[1];i++) {
-            pushObsToMatchCache(&svr->obs[1][i],1);
+        // 先把本轮新解码出的 rover/base 历元压入匹配缓存
+        if (relativeMode) {
+            for (i=0;i<fobs[0];i++) {
+                if (pushObsToMatchCache(&svr->obs[0][i],0)<0) {
+                    svr->prcout++;
+                }
+            }
+            for (i=0;i<fobs[1];i++) {
+                pushObsToMatchCache(&svr->obs[1][i],1);
+            }
         }
 
         // 只处理 rover 队首，按最近邻匹配 base，再送入 rtkpos
-        for (;;) {
+        for (;relativeMode;) {
             int matchStatus = OBS_MATCH_WAIT;
             int baseIndex = -1;
             double matchDt = 0.0;
@@ -974,19 +1037,7 @@ void RtServer::solverThread() {
             }
             consumeMatchResult(matchStatus);
 
-            if (!strstr(svr->rtk.opt.pppopt,"-DIS_FCB")) {
-                corr_phase_bias(obs.data,obs.n,&svr->nav);
-            }
-            rtksvrlock(svr);
-            rtkpos(&svr->rtk,obs.data,obs.n,&svr->nav);
-            rtksvrunlock(svr);
-
-            if (svr->rtk.sol.stat!=SOLQ_NONE) {
-                tt=(int)(tickget()-tick)/1000.0+DTTOL;
-                timeset(gpst2utc(timeadd(svr->rtk.sol.time,tt)));
-                writesol(svr,0);
-            }
-            if ((int)(tickget()-tick)>=svr->cycle) {
+            if (!runRtkPos(0)) {
                 break;
             }
         }

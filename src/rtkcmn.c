@@ -267,13 +267,13 @@ static const char *obscodes[MAXCODE + 1]={
     "6P"
 };
 static char codepris[7][MAXFREQ][16]={  /* code priority for each freq-index */
-    /* L1/E1/B1 L2/E5b/B2b L5/E5a/B2a E6/LEX/B3 E5(a+b)         */
-    {"CPYWMNSLX","CPYWMNDLSX","IQX"    ,""       ,""        ,""}, /* GPS */
+    /* L1/E1/B1l   L5/E5a/B2a   L2/E5b/B1C   E6/B2b         */
+    {"CPYWMNSLX","IQX"      ,"CPYWMNDLSX",""     ,""        ,""}, /* GPS */
     {"CPABX"   ,"CPABX"     ,"IQX"     ,""       ,""        ,""}, /* GLO */
     {"CABXZ"   ,"XIQ"       ,"XIQ"     ,"ABCXZ"  ,"IQX"     ,""}, /* GAL */
     {"CLSXZBE" ,"LSX"       ,"IQXDPZ"  ,"LSXEZ"  ,""        ,""}, /* QZS */
     {"C"       ,"IQX"       ,""        ,""       ,""        ,""}, /* SBS */
-    {"IQX"     ,"IQXDPZ"    ,"DPX"     ,"IQXDPZA","DPXSLZAN","DPX"}, /* BDS */
+    {"IQX"     ,"DPX"       ,"DPX"     ,"IQXDPZ" ,"IQXA"    ,"DPX"}, /* BDS */
     {"ABCX"    ,"ABCX"      ,"DPX"     ,""       ,""        ,""}  /* IRN */
 };
 static fatalfunc_t *fatalfunc=NULL; /* fatal callback function */
@@ -614,8 +614,8 @@ static int code2freq_GPS(uint8_t code, double *freq)
 
     switch (obs[0]) {
         case '1': *freq=FREQL1; return 0; /* L1 */
-        case '2': *freq=FREQL2; return 1; /* L2 */
-        case '5': *freq=FREQL5; return 2; /* L5 */
+        case '5': *freq=FREQL5; return 1; /* L5 */
+        case '2': *freq=FREQL2; return 2; /* L2 */
     }
     return -1;
 }
@@ -646,8 +646,8 @@ static int code2freq_GAL(uint8_t code, double *freq)
 
     switch (obs[0]) {
         case '1': *freq=FREQL1; return 0; /* E1 */
-        case '7': *freq=FREQE5b; return 1; /* E5b */
-        case '5': *freq=FREQL5; return 2; /* E5a */
+        case '5': *freq=FREQL5; return 1; /* E5a */
+        case '7': *freq=FREQE5b; return 2;/* E5b */
         case '6': *freq=FREQL6; return 3; /* E6 */
         case '8': *freq=FREQE5ab; return 4; /* E5ab */
     }
@@ -660,8 +660,8 @@ static int code2freq_QZS(uint8_t code, double *freq)
 
     switch (obs[0]) {
         case '1': *freq=FREQL1; return 0; /* L1 */
-        case '2': *freq=FREQL2; return 1; /* L2 */
-        case '5': *freq=FREQL5; return 2; /* L5 */
+        case '5': *freq=FREQL5; return 1; /* L5 */
+        case '2': *freq=FREQL2; return 2; /* L2 */
         case '6': *freq=FREQL6; return 3; /* L6 */
     }
     return -1;
@@ -684,10 +684,10 @@ static int code2freq_BDS(uint8_t code, double *freq)
 
     switch (obs[0]) {
         case '2': *freq=FREQ1_CMP; return 0; /* B1I */
-        case '7': *freq=FREQ2_CMP; return 1; /* B2,B2b */
-        case '5': *freq=FREQL5;    return 2; /* B2a */
-        case '6': *freq=FREQ3_CMP; return 3; /* B3 */
-        case '1': *freq=FREQL1;    return 4; /* B1C,B1A */
+        case '5': *freq=FREQL5;    return 1; /* B2a */
+        case '1': *freq=FREQL1;    return 2; /* B1C,B1A */
+        case '7': *freq=FREQ2_CMP; return 3; /* B2b */
+        case '6': *freq=FREQ3_CMP; return 4; /* B3 */
         case '8': *freq=FREQE5ab;  return 5; /* B2ab */
     }
     return -1;
@@ -699,8 +699,8 @@ static int code2freq_IRN(uint8_t code, double *freq)
 
     switch (obs[0]) {
         case '5': *freq=FREQL5; return 0; /* L5 */
-        case '9': *freq=FREQs; return 1; /* S */
-        case '1': *freq=FREQL1; return 2; /* L1 */
+        case '1': *freq=FREQL1; return 1; /* L1 */
+        case '9': *freq=FREQs; return 2; /* S */
     }
     return -1;
 }
@@ -711,13 +711,13 @@ static int code2freq_IRN(uint8_t code, double *freq)
 * return : frequency index (-1: error)
 *                       0     1     2     3     4     5
 *           ---------------------------------------------
-*            GPS       L1    L2    L5     -     -     -
+*            GPS       L1    L5    L2     -     -     -
 *            GLONASS   G1    G2    G3     -     -     -  (G1=G1,G1a,G2=G2,G2a)
-*            Galileo   E1    E5b   E5a   E6   E5ab    -
-*            QZSS      L1    L2    L5    L6     -     -
+*            Galileo   E1    E5a   E5b   E6   E5ab    -
+*            QZSS      L1    L5    L2    L6     -     -
 *            SBAS      L1     -    L5     -     -     -
-*            BDS       B1    B2b   B2a   B3   B1C   B2ab
-*            NavIC     L5     S    L1     -     -     -
+*            BDS       B1l   B2a   B1C   B2B   B3   B2ab
+*            NavIC     L5    L1     S     -     -     -
 *-----------------------------------------------------------------------------*/
 extern int code2idx(int sys, uint8_t code)
 {
