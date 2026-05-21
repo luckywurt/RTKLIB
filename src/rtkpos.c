@@ -2358,6 +2358,7 @@ extern int rtkpos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         opt->mode!=PMODE_MOVEB) {
         for (i=0;i<6;i++) rtk->rb[i]=i<3?opt->rb[i]:0.0;
     }
+
     /* count rover/base station observations */
     for (nu=0;nu   <n&&obs[nu   ].rcv==1;nu++) ;
     for (nr=0;nu+nr<n&&obs[nu+nr].rcv==2;nr++) ;

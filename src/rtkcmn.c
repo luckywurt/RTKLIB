@@ -2787,97 +2787,121 @@ extern int readblq(const char *file, const char *sta, double odisp[2][11][3])
 * read earth rotation parameters
 * args   : char   *file       I   IGS ERP file (IGS ERP ver.2)
 *          erp_t  *erp        O   earth rotation parameters
-* return : status (1:ok,0:file open error)
+* return : number of files read.
 *-----------------------------------------------------------------------------*/
 extern int readerp(const char *file, erp_t *erp) {
   trace(3, "readerp: file=%s\n", file);
 
-  FILE *fp = fopen(file, "r");
-  if (!fp) {
-    trace(2, "erp file open error: file=%s\n", file);
-    return 0;
+  char *efiles[MAXEXFILE];
+
+  for (int i = 0; i < MAXEXFILE; i++) {
+    efiles[i] = (char *)malloc(1024);
+    if (!efiles[i]) {
+      for (i--; i >= 0; i--) free(efiles[i]);
+      return 0;
+    }
   }
-  char buff[256];
-  int state = 0;
-  int utcp = 0, taip = 0;
-  while (fgets(buff, sizeof(buff), fp)) {
-    // Detect the IGS format, and support concatenated files.
-    if (strstr(buff, "version 2") || strstr(buff, "VERSION 2")) {
-      state = 1;
-      continue;
+  // Expand wild card in file path.
+  int n = expath(file, efiles, MAXEXFILE), nr = 0;
+
+  for (int i = 0; i < n; i++) {
+    char *ext = strrchr(efiles[i], '.');
+    if (!ext) continue;
+
+    if (!strstr(ext,".erp") && !strstr(ext,".ERP")) continue;
+
+    FILE *fp = fopen(efiles[i], "r");
+    if (!fp) {
+      trace(2, "erp file open error: file=%s\n", efiles[i]);
+      for (int j = 0; j < MAXEXFILE; j++) free(efiles[j]);
+      return 0;
     }
-    if (state == 0) {
-      // Ignore content without firstly seeing the IGS format version.
-      continue;
-    }
-    if (state == 1) {
-      // IGS format content header search. Data is not read without firstly
-      // reading the content header line. A version line is detected above,
-      // and other lines are ignored. Allow some variation in case.
-      if (strstr(buff, "MJD") || strstr(buff, "mjd") || strstr(buff, "Xpole") ||
-          strstr(buff, "xpole") || strstr(buff, "Ypole") || strstr(buff, "ypole") ||
-          strstr(buff, "UT1") || strstr(buff, "ut1") || strstr(buff, "UTC") ||
-          strstr(buff, "utc") || strstr(buff, "TAI") || strstr(buff, "tai") ||
-          strstr(buff, "LOD") || strstr(buff, "lod")) {
-        // Note UTC vs TAI.
-        utcp = !!(strstr(buff, "UTC") || strstr(buff, "utc"));
-        taip = !!(strstr(buff, "TAI") || strstr(buff, "tai"));
-        state = 2;
-      }
-      continue;
-    }
-    if (state == 2) {
-      // IGS format data search. Detect data lines as containing only
-      // numeric data. A version line is detected above, and other lines are
-      // ignored.
-      int data = 0;
-      for (size_t i = 0; i < strlen(buff); i++) {
-        char ch = buff[i];
-        if (ch == '\0' || ch == '\r' || ch == '\n') break;
-        if (ch == '.' || ch == '-' || ch == '+' || ch == ' ' || ch == '\t') continue;
-        if (ch < '0' || ch > '9') {
-          data = 0;
-          break;
-        }
-        data = 1;
-      }
-      if (!data) continue;
-      double v[14] = {0};
-      if (sscanf(buff, "%lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf", v, v + 1, v + 2,
-                 v + 3, v + 4, v + 5, v + 6, v + 7, v + 8, v + 9, v + 10, v + 11, v + 12,
-                 v + 13) < 5) {
+    char buff[256];
+    int state = 0;
+    int utcp = 0, taip = 0, nerp = 0;
+    while (fgets(buff, sizeof(buff), fp)) {
+      // Detect the IGS format, and support concatenated files.
+      if (strstr(buff, "version 2") || strstr(buff, "VERSION 2")) {
+        state = 1;
         continue;
       }
-      if (erp->n >= erp->nmax) {
-        erp->nmax = erp->nmax <= 0 ? 128 : erp->nmax * 2;
-        erpd_t *erp_data = (erpd_t *)realloc(erp->data, sizeof(erpd_t) * erp->nmax);
-        if (erp_data == NULL) {
-          free(erp->data);
-          erp->data = NULL;
-          erp->n = erp->nmax = 0;
-          fclose(fp);
-          return 0;
+      if (state == 0) {
+        // Ignore content without firstly seeing the IGS format version.
+        continue;
+      }
+      if (state == 1) {
+        // IGS format content header search. Data is not read without firstly
+        // reading the content header line. A version line is detected above,
+        // and other lines are ignored. Allow some variation in case.
+        if (strstr(buff, "MJD") || strstr(buff, "mjd") || strstr(buff, "Xpole") ||
+            strstr(buff, "xpole") || strstr(buff, "Ypole") || strstr(buff, "ypole") ||
+            strstr(buff, "UT1") || strstr(buff, "ut1") || strstr(buff, "UTC") ||
+            strstr(buff, "utc") || strstr(buff, "TAI") || strstr(buff, "tai") ||
+            strstr(buff, "LOD") || strstr(buff, "lod")) {
+          // Note UTC vs TAI.
+          utcp = !!(strstr(buff, "UTC") || strstr(buff, "utc"));
+          taip = !!(strstr(buff, "TAI") || strstr(buff, "tai"));
+          state = 2;
         }
-        erp->data = erp_data;
+        continue;
       }
-      erp->data[erp->n].mjd = v[0];
-      erp->data[erp->n].xp = v[1] * 1E-6 * AS2R;
-      erp->data[erp->n].yp = v[2] * 1E-6 * AS2R;
-      erp->data[erp->n].ut1_utc = v[3] * 1E-7;
-      (void)utcp;
-      if (taip) {
-        // Convert UT1-TAI to UT1-UTC.
-        const double ep[] = {2000, 1, 1, 12, 0, 0};
-        gtime_t tutc = timeadd(epoch2time(ep), (v[0] - 51544.5) * 86400.0);
-        erp->data[erp->n].ut1_utc += timediff(utc2gpst(tutc), tutc) + 19;
+      if (state == 2) {
+        // IGS format data search. Detect data lines as containing only
+        // numeric data. A version line is detected above, and other lines are
+        // ignored.
+        int data = 0;
+        for (size_t i = 0; i < strlen(buff); i++) {
+          char ch = buff[i];
+          if (ch == '\0' || ch == '\r' || ch == '\n') break;
+          if (ch == '.' || ch == '-' || ch == '+' || ch == ' ' || ch == '\t') continue;
+          if (ch < '0' || ch > '9') {
+            data = 0;
+            break;
+          }
+          data = 1;
+        }
+        if (!data) continue;
+        double v[14] = {0};
+        if (sscanf(buff, "%lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf", v, v + 1, v + 2,
+                   v + 3, v + 4, v + 5, v + 6, v + 7, v + 8, v + 9, v + 10, v + 11, v + 12,
+                   v + 13) < 5) {
+          continue;
+        }
+        if (erp->n >= erp->nmax) {
+          erp->nmax = erp->nmax <= 0 ? 128 : erp->nmax * 2;
+          erpd_t *erp_data = (erpd_t *)realloc(erp->data, sizeof(erpd_t) * erp->nmax);
+          if (erp_data == NULL) {
+            free(erp->data);
+            erp->data = NULL;
+            erp->n = erp->nmax = 0;
+            fclose(fp);
+            for (int j = 0; j < MAXEXFILE; j++) free(efiles[j]);
+            return 0;
+          }
+          erp->data = erp_data;
+        }
+        erp->data[erp->n].mjd = v[0];
+        erp->data[erp->n].xp = v[1] * 1E-6 * AS2R;
+        erp->data[erp->n].yp = v[2] * 1E-6 * AS2R;
+        erp->data[erp->n].ut1_utc = v[3] * 1E-7;
+        (void)utcp;
+        if (taip) {
+          // Convert UT1-TAI to UT1-UTC.
+          const double ep[] = {2000, 1, 1, 12, 0, 0};
+          gtime_t tutc = timeadd(epoch2time(ep), (v[0] - 51544.5) * 86400.0);
+          erp->data[erp->n].ut1_utc += timediff(utc2gpst(tutc), tutc) + 19;
+        }
+        erp->data[erp->n].lod = v[4] * 1E-7;
+        erp->data[erp->n].xpr = v[12] * 1E-6 * AS2R;
+        erp->data[erp->n++].ypr = v[13] * 1E-6 * AS2R;
+        nerp++;
       }
-      erp->data[erp->n].lod = v[4] * 1E-7;
-      erp->data[erp->n].xpr = v[12] * 1E-6 * AS2R;
-      erp->data[erp->n++].ypr = v[13] * 1E-6 * AS2R;
     }
+    if (nerp > 0) nr++;
+    fclose(fp);
   }
-  fclose(fp);
-  return 1;
+  for (int j = 0; j < MAXEXFILE; j++) free(efiles[j]);
+  return nr;
 }
 /* get earth rotation parameter values -----------------------------------------
 * get earth rotation parameter values
@@ -3136,7 +3160,7 @@ extern int readnav(const char *file, nav_t *nav)
     eph_t eph0={0};
     geph_t geph0={0};
     char buff[4096],*p;
-    long toe_time,tof_time,toc_time,ttr_time;
+    long unsigned toe_time,tof_time,toc_time,ttr_time;
     int i,sat,prn;
 
     trace(3,"loadnav: file=%s\n",file);
@@ -3160,7 +3184,7 @@ extern int readnav(const char *file, nav_t *nav)
             nav->geph[prn-1]=geph0;
             nav->geph[prn-1].sat=sat;
             toe_time=tof_time=0;
-            (void)sscanf(p+1,"%d,%d,%d,%d,%d,%d,%ld,%ld,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,"
+            (void)sscanf(p+1,"%d,%d,%d,%d,%d,%d,%lu,%lu,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,"
                         "%lf,%lf,%lf,%lf",
                    &nav->geph[prn-1].iode,&nav->geph[prn-1].frq,&nav->geph[prn-1].svh,
                    &nav->geph[prn-1].flags,&nav->geph[prn-1].sva,&nav->geph[prn-1].age,
@@ -3176,7 +3200,7 @@ extern int readnav(const char *file, nav_t *nav)
             nav->eph[sat-1]=eph0;
             nav->eph[sat-1].sat=sat;
             toe_time=toc_time=ttr_time=0;
-            (void)sscanf(p+1,"%d,%d,%d,%d,%ld,%ld,%ld,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,"
+            (void)sscanf(p+1,"%d,%d,%d,%d,%lu,%lu,%lu,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,"
                         "%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%d,%d",
                    &nav->eph[sat-1].iode,&nav->eph[sat-1].iodc,&nav->eph[sat-1].sva ,
                    &nav->eph[sat-1].svh ,
@@ -3210,12 +3234,12 @@ extern int savenav(const char *file, const nav_t *nav)
     for (i=0;i<MAXSAT;i++) {
         if (nav->eph[i].ttr.time==0) continue;
         satno2id(nav->eph[i].sat,id);
-        fprintf(fp,"%s,%d,%d,%d,%d,%d,%d,%d,%.14E,%.14E,%.14E,%.14E,%.14E,%.14E,"
+        fprintf(fp,"%s,%d,%d,%d,%d,%lu,%lu,%lu,%.14E,%.14E,%.14E,%.14E,%.14E,%.14E,"
                    "%.14E,%.14E,%.14E,%.14E,%.14E,%.14E,%.14E,%.14E,%.14E,%.14E,"
                    "%.14E,%.14E,%.14E,%.14E,%.14E,%d,%d\n",
                 id,nav->eph[i].iode,nav->eph[i].iodc,nav->eph[i].sva ,
-                nav->eph[i].svh ,(int)nav->eph[i].toe.time,
-                (int)nav->eph[i].toc.time,(int)nav->eph[i].ttr.time,
+                nav->eph[i].svh ,(long unsigned)nav->eph[i].toe.time,
+                (long unsigned)nav->eph[i].toc.time,(long unsigned)nav->eph[i].ttr.time,
                 nav->eph[i].A   ,nav->eph[i].e  ,nav->eph[i].i0  ,nav->eph[i].OMG0,
                 nav->eph[i].omg ,nav->eph[i].M0 ,nav->eph[i].deln,nav->eph[i].OMGd,
                 nav->eph[i].idot,nav->eph[i].crc,nav->eph[i].crs ,nav->eph[i].cuc ,
@@ -3226,12 +3250,12 @@ extern int savenav(const char *file, const nav_t *nav)
     for (i=0;i<MAXPRNGLO;i++) {
         if (nav->geph[i].tof.time==0) continue;
         satno2id(nav->geph[i].sat,id);
-        fprintf(fp,"%s,%d,%d,%d,%d,%d,%d,%d,%d,%.14E,%.14E,%.14E,%.14E,%.14E,%.14E,"
+        fprintf(fp,"%s,%d,%d,%d,%d,%d,%d,%lu,%lu,%.14E,%.14E,%.14E,%.14E,%.14E,%.14E,"
                    "%.14E,%.14E,%.14E,%.14E,%.14E,%.14E\n",
                 id,nav->geph[i].iode,nav->geph[i].frq,nav->geph[i].svh,
                 nav->geph[i].flags,
-                nav->geph[i].sva,nav->geph[i].age,(int)nav->geph[i].toe.time,
-                (int)nav->geph[i].tof.time,
+                nav->geph[i].sva,nav->geph[i].age,(long unsigned)nav->geph[i].toe.time,
+                (long unsigned)nav->geph[i].tof.time,
                 nav->geph[i].pos[0],nav->geph[i].pos[1],nav->geph[i].pos[2],
                 nav->geph[i].vel[0],nav->geph[i].vel[1],nav->geph[i].vel[2],
                 nav->geph[i].acc[0],nav->geph[i].acc[1],nav->geph[i].acc[2],
