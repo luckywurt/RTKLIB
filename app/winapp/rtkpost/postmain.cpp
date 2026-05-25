@@ -1000,8 +1000,7 @@ int __fastcall TMainForm::GetOption(prcopt_t &prcopt, solopt_t &solopt,
     prcopt.posopt[4]=PosOpt[4];
     prcopt.posopt[5]=PosOpt[5];
     prcopt.dynamics =DynamicModel;
-    prcopt.tidecorr =TideCorr;
-    if (prcopt.tidecorr > 1) prcopt.tidecorr = 7;
+    prcopt.tidecorr =TideCorr & 7;
     prcopt.armaxiter=ARIter;
     prcopt.niter    =NumIter;
     prcopt.minfixsats=MinFixSats;
@@ -1356,6 +1355,7 @@ void __fastcall TMainForm::LoadOpt(void)
     
     PosMode            =ini->ReadInteger("opt","posmode",        2);
     Freq               =ini->ReadInteger("opt","freq",     NFREQ-1);
+    if (Freq > NFREQ - 1) Freq = NFREQ - 1;
     Solution           =ini->ReadInteger("opt","solution",       0);
     ElMask             =ini->ReadFloat  ("opt","elmask",      15.0);
     SnrMask.ena[0]     =ini->ReadInteger("opt","snrmask_ena1",   0);
