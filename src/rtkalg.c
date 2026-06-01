@@ -284,8 +284,12 @@ static void select_sat_geom(rtk_t *rtk, const obsd_t *obs, double dt,
         rtk->refsat[m][frq]=sat[best];
         rtk->refsat_bad[m][frq]=0;
         refsat[m][frq]=refsat[m][frq+nf]=sat[best];
-        trace(3,"refsat geom: sys=%d frq=%d sat=%d ndd=%d kappa=%.3e score=%.3f%s%s\n",
-              m,frq+1,sat[best],best_ndd,best_kappa,best_score,
-              kept_prev?" kept":"",best_degraded?" degraded":"");
+        if (best_degraded) {
+            trace(3,"refsat geom: sys=%d frq=%d sat=%d ndd=%d degraded\n",m,frq+1,sat[best],best_ndd);
+        }
+        else {
+            trace(3,"refsat geom: sys=%d frq=%d sat=%d ndd=%d kappa=%.3e score=%.3f%s\n",
+                  m,frq+1,sat[best],best_ndd,best_kappa,best_score,kept_prev?" kept":"");
+        }
     }
 }
