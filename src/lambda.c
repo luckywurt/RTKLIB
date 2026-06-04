@@ -204,6 +204,61 @@ extern int lambda(int n, int m, const double *a, const double *Q, double *F,
     free(L); free(D); free(Z); free(z); free(E);
     return info;
 }
+/* lambda reduction with intermediate results for PAR -------------------------
+* args   : int    n      I  number of float parameters
+*          double *a     I  float parameters (n x 1)
+*          double *Q     I  covariance matrix of float parameters (n x n)
+*          double *Z     O  lambda reduction matrix (n x n)
+*          double *z     O  reduced float parameters z=Z'*a (n x 1)
+*          double *Qz    O  reduced covariance Qz=Z'*Q*Z (n x n)
+*          double *L     O  reduced unit lower triangular matrix (n x n)
+*          double *D     O  reduced conditional variances (n x 1)
+* return : status (0:ok,other:error)
+* notes  : intended for PAR, which selects subsets in the reduced z-space
+*-----------------------------------------------------------------------------*/
+extern int lambda_reduction_info(int n, const double *a, const double *Q,
+                                 double *Z, double *z, double *Qz,
+                                 double *L, double *D)
+{
+    double *T;
+    int i,j,info;
+
+    if (n<=0) return -1;
+
+    for (i=0;i<n;i++) for (j=0;j<n;j++) {
+        Z[i+j*n]=i==j?1.0:0.0;
+        L[i+j*n]=0.0;
+    }
+    if ((info=LD(n,Q,L,D))) return info;
+
+    reduction(n,L,D,Z);
+    matmul("TN",n,1,n,Z,a,z);
+
+    T=mat(n,n);
+    matmul("TN",n,n,n,Z,Q,T);
+    matmul("NN",n,n,n,T,Z,Qz);
+    free(T);
+
+    return 0;
+}
+/* mlambda search using precomputed L/D ---------------------------------------
+* args   : int    n      I  number of float parameters
+*          int    m      I  number of fixed solutions
+*          double *z     I  reduced float parameters (n x 1)
+*          double *L     I  reduced unit lower triangular matrix (n x n)
+*          double *D     I  reduced conditional variances (n x 1)
+*          double *F     O  fixed solutions in the same reduced space (n x m)
+*          double *s     O  sum of squared residuals (1 x m)
+* return : status (0:ok,other:error)
+*-----------------------------------------------------------------------------*/
+extern int lambda_search_LD(int n, int m, const double *z,
+                            const double *L, const double *D,
+                            double *F, double *s)
+{
+    if (n<=0||m<=0) return -1;
+
+    return search(n,m,L,D,z,F,s);
+}
 /* lambda reduction ------------------------------------------------------------
 * reduction by lambda (ref [1]) for integer least square
 * args   : int    n      I  number of float parameters

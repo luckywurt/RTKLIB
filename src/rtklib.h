@@ -1861,6 +1861,12 @@ EXPORT int lambda(int n, int m, const double *a, const double *Q, double *F,
 EXPORT int lambda_reduction(int n, const double *Q, double *Z);
 EXPORT int lambda_search(int n, int m, const double *a, const double *Q,
                          double *F, double *s);
+EXPORT int lambda_reduction_info(int n, const double *a, const double *Q,
+                                 double *Z, double *z, double *Qz,
+                                 double *L, double *D);
+EXPORT int lambda_search_LD(int n, int m, const double *z,
+                            const double *L, const double *D,
+                            double *F, double *s);
 
 /* standard positioning ------------------------------------------------------*/
 EXPORT int pntpos(const obsd_t *obs, int n, const nav_t *nav,

@@ -38,7 +38,6 @@ extern int test_sys(int sys, int m);
 
 static void errmsg(rtk_t *rtk, const char *format, ...);
 static int ddidx(rtk_t *rtk, int *ix, int gps, int glo, int sbs);
-static void restamb(rtk_t *rtk, const double *bias, int nb, double *xa);
 
 static const double par_ffrt_coeffs[62][3]={
     {0.3364,-0.2968,-0.3335},{0.4401,-0.2435,-0.3686},
@@ -74,29 +73,6 @@ static const double par_ffrt_coeffs[62][3]={
     {0.0149,-0.4873, 0.8628},{0.0071,-0.6131, 0.8773}
 };
 
-/* LD factorization for conditional variances Q=L'*D*L ----------------------*/
-static int par_ld_condvar(int n, const double *Q, double *D)
-{
-    double *A=mat(n,n),*L=mat(n,n),a;
-    int i,j,k,info=0;
-
-    memcpy(A,Q,sizeof(double)*n*n);
-    for (i=n-1;i>=0;i--) {
-        if ((D[i]=A[i+i*n])<=0.0) {
-            info=-1;
-            break;
-        }
-        a=sqrt(D[i]);
-        for (j=0;j<=i;j++) L[i+j*n]=A[i+j*n]/a;
-        for (j=0;j<=i-1;j++) for (k=0;k<=j;k++) {
-            A[j+k*n]-=L[i+k*n]*L[i+j*n];
-        }
-        for (j=0;j<=i;j++) L[i+j*n]/=L[i+i*n];
-    }
-    free(A); free(L);
-    return info;
-}
-
 /* standard normal cdf approximation ----------------------------------------*/
 static double par_norm_cdf(double x)
 {
@@ -111,19 +87,19 @@ static double par_norm_cdf(double x)
     return neg?1.0-prob:prob;
 }
 
-/* bootstrapping success rate from conditional variances ---------------------*/
-static double par_bootstrap_success(int n, const double *D)
+/* bootstrapping success rate from reduced z-space conditional variances ------*/
+static double par_bootstrap_success(int p, const double *D)
 {
-    double ps=1.0,arg,p;
+    double ps=1.0,arg,prob;
     int i;
 
-    for (i=0;i<n;i++) {
+    for (i=0;i<p;i++) {
         if (D[i]<=0.0) return 0.0;
         arg=0.5/sqrt(D[i]);
-        p=2.0*par_norm_cdf(arg)-1.0;
-        if (p<0.0) p=0.0;
-        else if (p>1.0) p=1.0;
-        ps*=p;
+        prob=2.0*par_norm_cdf(arg)-1.0;
+        if (prob<0.0) prob=0.0;
+        else if (prob>1.0) prob=1.0;
+        ps*=prob;
     }
     return ps;
 }
@@ -153,23 +129,6 @@ static int par_bffrt_threshold(int p, double ps, double *thres)
     return 1;
 }
 
-/* copy full DD ambiguity model into a selected subset -----------------------*/
-static void par_build_subset_mats(int nb, int p, const int *map,
-                                  const double *y0, const double *Qb0,
-                                  const double *Qab0, int na,
-                                  double *y, double *Qb, double *Qab)
-{
-    int i,j;
-
-    for (i=0;i<p;i++) y[i]=y0[map[i]];
-    for (j=0;j<p;j++) for (i=0;i<p;i++) {
-        Qb[i+j*p]=Qb0[map[i]+map[j]*nb];
-    }
-    for (j=0;j<p;j++) for (i=0;i<na;i++) {
-        Qab[i+j*na]=Qab0[i+map[j]*na];
-    }
-}
-
 /* build full DD float ambiguities and covariance matrices -------------------*/
 static void par_build_full_dd_mats(const rtk_t *rtk, const int *ix, int nb,
                                    double *y, double *DP, double *Qb,
@@ -194,35 +153,58 @@ static void par_build_full_dd_mats(const rtk_t *rtk, const int *ix, int nb,
     }
 }
 
-/* trace of fixed position covariance for a selected ambiguity set -----------*/
-static int par_fixed_pos_trace(const rtk_t *rtk, const double *Qab,
-                               const double *Qb, int nb, double *tr)
+/* copy a tail subset in the reduced z-space --------------------------------*/
+static void par_build_z_subset(int n, int start, const double *z,
+                               const double *Qzz, const double *L,
+                               const double *D, const double *Z,
+                               double *zp, double *Qp, double *Lp,
+                               double *Dp, double *Zp)
+{
+    int i,j,p=n-start;
+
+    for (i=0;i<p;i++) {
+        zp[i]=z[start+i];
+        Dp[i]=D[start+i];
+        for (j=0;j<p;j++) {
+            Qp[i+j*p]=Qzz[start+i+(start+j)*n];
+            Lp[i+j*p]=L[start+i+(start+j)*n];
+        }
+    }
+    for (j=0;j<p;j++) for (i=0;i<n;i++) {
+        Zp[i+j*n]=Z[i+(start+j)*n];
+    }
+}
+
+/* trace of fixed position covariance for a selected z-space ambiguity set ---*/
+static int par_fixed_pos_trace_z(const rtk_t *rtk, const double *Qbz,
+                                 const double *Qzz, int p, double *tr)
 {
     int i,j,nx=rtk->nx,na=rtk->na;
-    double *Qbi,*QQ,*Pa;
+    double *Qzi,*QQ,*Pa;
 
-    if (na<3||nb<=0) return 0;
+    if (na<3||p<=0) return 0;
 
-    Qbi=mat(nb,nb); QQ=mat(na,nb); Pa=mat(na,na);
-    matcpy(Qbi,Qb,nb,nb);
+    Qzi=mat(p,p); QQ=mat(na,p); Pa=mat(na,na);
+    matcpy(Qzi,Qzz,p,p);
     for (j=0;j<na;j++) for (i=0;i<na;i++) {
         Pa[i+j*na]=rtk->P[i+j*nx];
     }
-    if (matinv(Qbi,nb)) {
-        free(Qbi); free(QQ); free(Pa);
+    if (matinv(Qzi,p)) {
+        free(Qzi); free(QQ); free(Pa);
         return 0;
     }
-    matmul("NN",na,nb,nb,Qab,Qbi,QQ);
-    matmulm("NT",na,na,nb,QQ,Qab,Pa);
+    matmul("NN",na,p,p,Qbz,Qzi,QQ);
+    matmulm("NT",na,na,p,QQ,Qbz,Pa);
     *tr=Pa[0]+Pa[1+na]+Pa[2+2*na];
 
-    free(Qbi); free(QQ); free(Pa);
+    free(Qzi); free(QQ); free(Pa);
     return *tr>0.0;
 }
 
-/* baseline precision defect check ------------------------------------------*/
-static int par_bpd_ok(const rtk_t *rtk, const double *Qab, const double *Qb,
-                      int nb, double tr_full, double *bpd)
+/* baseline precision defect check for a selected z-space subset ------------*/
+static int par_bpd_z_ok(const rtk_t *rtk, const double *Qbz,
+                        const double *Qzz, int p, double tr_full,
+                        double *bpd)
 {
     double tr_float,tr_part;
     int nx=rtk->nx;
@@ -230,138 +212,159 @@ static int par_bpd_ok(const rtk_t *rtk, const double *Qab, const double *Qb,
     if (tr_full<=0.0) return 0;
     tr_float=rtk->P[0]+rtk->P[1+nx]+rtk->P[2+2*nx];
     if (tr_float<=0.0) return 0;
-    if (!par_fixed_pos_trace(rtk,Qab,Qb,nb,&tr_part)) return 0;
+    if (!par_fixed_pos_trace_z(rtk,Qbz,Qzz,p,&tr_part)) return 0;
     *bpd=sqrt(tr_float/tr_full)-sqrt(tr_float/tr_part);
     return *bpd<=PAR_BPD_MAX;
 }
 
-/* select DD ambiguity with largest conditional variance for removal ---------*/
-static int par_worst_dd_index(int n, const double *Qb)
+/* update real-valued states using a fixed reduced z-space subset ------------*/
+static int par_update_real_z(rtk_t *rtk, const double *zp,
+                             const double *zfix, const double *Qp,
+                             const double *Qbz, int p)
 {
-    double *D=mat(n,1),worst;
-    int i,drop=0;
+    int i,j,nx=rtk->nx,na=rtk->na;
+    double *Qpi,*dz,*db,*QQ;
 
-    if (par_ld_condvar(n,Qb,D)) {
-        for (i=0;i<n;i++) D[i]=Qb[i+i*n];
-    }
-    worst=D[0];
-    for (i=1;i<n;i++) {
-        if (D[i]>worst) {
-            worst=D[i];
-            drop=i;
-        }
-    }
-    free(D);
-    return drop;
-}
-
-static int par_state_sat_freq(const rtk_t *rtk, int index, int *sat, int *f)
-{
-    int off=index-rtk->na;
-
-    if (off<0) return 0;
-    *f=off/MAXSAT;
-    *sat=off%MAXSAT+1;
-    return *sat>=1&&*sat<=MAXSAT&&*f>=0&&*f<NFREQ;
-}
-
-/* apply PAR subset to ssat fix flags so restamb() consumes matching DD order -*/
-static void par_apply_subset_fix_flags(rtk_t *rtk, const int *ix, const int *map,
-                                       int p)
-{
-    int i,j,sat,f;
-
-    for (i=0;i<MAXSAT;i++) for (j=0;j<NFREQ;j++) {
-        if (rtk->ssat[i].fix[j]==2) rtk->ssat[i].fix[j]=1;
-    }
-    for (i=0;i<p;i++) {
-        if (par_state_sat_freq(rtk,ix[map[i]*2],&sat,&f)) {
-            rtk->ssat[sat-1].fix[f]=2;
-        }
-        if (par_state_sat_freq(rtk,ix[map[i]*2+1],&sat,&f)) {
-            rtk->ssat[sat-1].fix[f]=2;
-        }
-    }
-}
-
-/* try to fix a selected DD ambiguity subset by SRC, B-FFRT and BPD ----------*/
-static int par_try_subset(rtk_t *rtk, const double *y, const double *Qb,
-                          const double *Qab, int nb, int minamb,
-                          double tr_full, double *bias)
-{
-    int i,j,info,nx=rtk->nx,na=rtk->na;
-    double *D,*b,*db,*dy,*Qbi,*QQ,s[2],ps,ratio,thres,bpd;
-
-    if (nb<minamb) return 0;
-
-    D=mat(nb,1);
-    if (par_ld_condvar(nb,Qb,D)) {
-        free(D);
-        errmsg(rtk,"PAR LD factorization failed (nb=%d)\n",nb);
-        return 0;
-    }
-    ps=par_bootstrap_success(nb,D);
-    free(D);
-    if (ps<PAR_SUCCESS_RATE_THRES) {
-        trace(3,"PAR SRC failed (nb=%d ps=%.6f thres=%.6f)\n",
-              nb,ps,PAR_SUCCESS_RATE_THRES);
-        return 0;
-    }
-    if (!par_bffrt_threshold(nb,ps,&thres)) {
-        trace(3,"PAR FFRT threshold failed (nb=%d ps=%.6f)\n",nb,ps);
-        return 0;
-    }
-    rtk->sol.thres=(float)thres;
-
-    b=mat(nb,2); db=mat(nb,1); dy=mat(nb,1);
-    Qbi=mat(nb,nb); QQ=mat(na,nb);
-
-    if ((info=lambda(nb,2,y,Qb,b,s))) {
-        errmsg(rtk,"PAR lambda error (info=%d nb=%d)\n",info,nb);
-        free(b); free(db); free(dy); free(Qbi); free(QQ);
-        return 0;
-    }
-    ratio=s[0]>PAR_RATIO_EPS?s[1]/s[0]:999.9;
-    rtk->sol.ratio=(float)MIN(ratio,999.9);
-
-    trace(3,"PAR N(1)=     "); tracemat(3,b   ,1,nb,7,2);
-    trace(3,"PAR N(2)=     "); tracemat(3,b+nb,1,nb,7,2);
-
-    if (ratio<thres) {
-        errmsg(rtk,"PAR FFRT failed (nb=%d ratio=%.2f thresh=%.2f ps=%.6f s=%.2f/%.2f)\n",
-               nb,ratio,thres,ps,s[0],s[1]);
-        free(b); free(db); free(dy); free(Qbi); free(QQ);
-        return 0;
-    }
-    if (!par_bpd_ok(rtk,Qab,Qb,nb,tr_full,&bpd)) {
-        errmsg(rtk,"PAR BPD failed (nb=%d ratio=%.2f thresh=%.2f ps=%.6f)\n",
-               nb,ratio,thres,ps);
-        free(b); free(db); free(dy); free(Qbi); free(QQ);
-        return 0;
-    }
+    Qpi=mat(p,p); dz=mat(p,1); db=mat(p,1); QQ=mat(na,p);
 
     for (i=0;i<na;i++) {
         rtk->xa[i]=rtk->x[i];
         for (j=0;j<na;j++) rtk->Pa[i+j*na]=rtk->P[i+j*nx];
     }
-    for (i=0;i<nb;i++) {
-        bias[i]=b[i];
-        dy[i]=y[i]-b[i];
-    }
-    matcpy(Qbi,Qb,nb,nb);
-    if (matinv(Qbi,nb)) {
-        free(b); free(db); free(dy); free(Qbi); free(QQ);
+    for (i=0;i<p;i++) dz[i]=zp[i]-zfix[i];
+
+    matcpy(Qpi,Qp,p,p);
+    if (matinv(Qpi,p)) {
+        free(Qpi); free(dz); free(db); free(QQ);
         return 0;
     }
-    matmul("NN",nb,1,nb,Qbi,dy,db);
-    matmulm("NN",na,1,nb,Qab,db,rtk->xa);
-    matmul("NN",na,nb,nb,Qab,Qbi,QQ);
-    matmulm("NT",na,na,nb,QQ,Qab,rtk->Pa);
+    matmul("NN",p,1,p,Qpi,dz,db);
+    matmulm("NN",na,1,p,Qbz,db,rtk->xa);
+    matmul("NN",na,p,p,Qbz,Qpi,QQ);
+    matmulm("NT",na,na,p,QQ,Qbz,rtk->Pa);
+
+    free(Qpi); free(dz); free(db); free(QQ);
+    return 1;
+}
+
+/* restore complete state vector for residual validation after z-space PAR ---*/
+static int par_restamb_z(rtk_t *rtk, const int *ix, int n, const double *Z,
+                         const double *z, const double *Qzz, int start,
+                         const double *zfix, int p, double *xa)
+{
+    double *zmix,*dz,*Qpi,*work,*amix;
+    int i,j,na=rtk->na;
+
+    zmix=mat(n,1); amix=mat(n,1);
+    for (i=0;i<n;i++) zmix[i]=z[i];
+
+    if (start>0) {
+        dz=mat(p,1); Qpi=mat(p,p); work=mat(p,1);
+        for (i=0;i<p;i++) {
+            dz[i]=z[start+i]-zfix[i];
+            for (j=0;j<p;j++) {
+                Qpi[i+j*p]=Qzz[start+i+(start+j)*n];
+            }
+        }
+        if (matinv(Qpi,p)) {
+            free(zmix); free(amix); free(dz); free(Qpi); free(work);
+            return 0;
+        }
+        matmul("NN",p,1,p,Qpi,dz,work);
+        for (i=0;i<start;i++) {
+            double corr=0.0;
+            for (j=0;j<p;j++) corr+=Qzz[i+(start+j)*n]*work[j];
+            zmix[i]=z[i]-corr;
+        }
+        free(dz); free(Qpi); free(work);
+    }
+    for (i=0;i<p;i++) zmix[start+i]=zfix[i];
+
+    if (solve("T",Z,zmix,n,1,amix)) {
+        free(zmix); free(amix);
+        return 0;
+    }
+
+    for (i=0;i<rtk->nx;i++) xa[i]=rtk->x[i];
+    for (i=0;i<na;i++) xa[i]=rtk->xa[i];
+
+    for (i=0;i<n;i++) {
+        xa[ix[i*2]]=rtk->x[ix[i*2]];
+    }
+    for (i=0;i<n;i++) {
+        xa[ix[i*2+1]]=xa[ix[i*2]]-amix[i];
+    }
+
+    free(zmix); free(amix);
+    return 1;
+}
+
+/* try to fix a tail subset in the reduced z-space --------------------------*/
+static int par_try_z_subset(rtk_t *rtk, const int *ix, int n, int start,
+                            const double *Z, const double *z,
+                            const double *Qzz, const double *L,
+                            const double *D, const double *Qab,
+                            double tr_full, double *xa)
+{
+    int p=n-start,info,na=rtk->na;
+    double *zp,*Qp,*Lp,*Dp,*Zp,*Qbz,*zfix,s[2],ps,ratio,thres,bpd;
+
+    zp=mat(p,1); Qp=mat(p,p); Lp=mat(p,p); Dp=mat(p,1);
+    Zp=mat(n,p); Qbz=mat(na,p); zfix=mat(p,2);
+
+    par_build_z_subset(n,start,z,Qzz,L,D,Z,zp,Qp,Lp,Dp,Zp);
+    ps=par_bootstrap_success(p,Dp);
+    if (ps<PAR_SUCCESS_RATE_THRES) {
+        trace(3,"PAR SRC failed (start=%d p=%d ps=%.6f thres=%.6f)\n",
+              start,p,ps,PAR_SUCCESS_RATE_THRES);
+        free(zp); free(Qp); free(Lp); free(Dp); free(Zp); free(Qbz); free(zfix);
+        return 0;
+    }
+    if (!par_bffrt_threshold(p,ps,&thres)) {
+        trace(3,"PAR FFRT threshold failed (start=%d p=%d ps=%.6f)\n",
+              start,p,ps);
+        free(zp); free(Qp); free(Lp); free(Dp); free(Zp); free(Qbz); free(zfix);
+        return 0;
+    }
+    rtk->sol.thres=(float)thres;
+
+    if ((info=lambda_search_LD(p,2,zp,Lp,Dp,zfix,s))) {
+        errmsg(rtk,"PAR z-space lambda error (info=%d start=%d p=%d)\n",
+               info,start,p);
+        free(zp); free(Qp); free(Lp); free(Dp); free(Zp); free(Qbz); free(zfix);
+        return 0;
+    }
+    ratio=s[0]>PAR_RATIO_EPS?s[1]/s[0]:999.9;
+    rtk->sol.ratio=(float)MIN(ratio,999.9);
+
+    trace(3,"PAR z(1)=     "); tracemat(3,zfix  ,1,p,7,2);
+    trace(3,"PAR z(2)=     "); tracemat(3,zfix+p,1,p,7,2);
+
+    if (ratio<thres) {
+        errmsg(rtk,"PAR FFRT failed (start=%d p=%d ratio=%.2f thresh=%.2f ps=%.6f s=%.2f/%.2f)\n",
+               start,p,ratio,thres,ps,s[0],s[1]);
+        free(zp); free(Qp); free(Lp); free(Dp); free(Zp); free(Qbz); free(zfix);
+        return 0;
+    }
+
+    matmul("NN",na,p,n,Qab,Zp,Qbz);
+    if (!par_bpd_z_ok(rtk,Qbz,Qp,p,tr_full,&bpd)) {
+        errmsg(rtk,"PAR BPD failed (start=%d p=%d ratio=%.2f thresh=%.2f ps=%.6f)\n",
+               start,p,ratio,thres,ps);
+        free(zp); free(Qp); free(Lp); free(Dp); free(Zp); free(Qbz); free(zfix);
+        return -1; /* BPD failure means smaller subsets are not useful here */
+    }
+
+    if (!par_update_real_z(rtk,zp,zfix,Qp,Qbz,p)||
+        !par_restamb_z(rtk,ix,n,Z,z,Qzz,start,zfix,p,xa)) {
+        free(zp); free(Qp); free(Lp); free(Dp); free(Zp); free(Qbz); free(zfix);
+        return -1;
+    }
 
     trace(3,"PAR validation ok (nb=%d ratio=%.2f thresh=%.2f ps=%.6f bpd=%.2f s=%.2f/%.2f)\n",
-          nb,ratio,thres,ps,bpd,s[0],s[1]);
+          p,ratio,thres,ps,bpd,s[0],s[1]);
 
-    free(b); free(db); free(dy); free(Qbi); free(QQ);
+    free(zp); free(Qp); free(Lp); free(Dp); free(Zp); free(Qbz); free(zfix);
     return 1;
 }
 
@@ -369,11 +372,12 @@ static int par_try_subset(rtk_t *rtk, const double *y, const double *Qb,
 static int resamb_PAR(rtk_t *rtk, double *bias, double *xa,
                       int gps, int glo, int sbs)
 {
-    int i,nb,nb0,p,drop,minamb,nx=rtk->nx,na=rtk->na,*ix,*map;
-    double *DP,*y0,*Qb0,*Qab0,*y,*Qb,*Qab,tr_full=0.0;
+    int nb,nb0,start,minamb,nx=rtk->nx,na=rtk->na,*ix,stat;
+    double *DP,*a,*Qaa,*Qab,*Z,*z,*Qzz,*L,*D,*Qbz,tr_full=0.0;
 
     trace(3,"resamb_PAR : nx=%d\n",nx);
 
+    (void)bias;
     rtk->sol.ratio=0.0;
     rtk->sol.thres=(float)PAR_FFRT_CMIN;
     rtk->nb_ar=0;
@@ -384,6 +388,10 @@ static int resamb_PAR(rtk_t *rtk, double *bias, double *xa,
         free(ix);
         return -1;
     }
+    rtk->nb_ar=nb0;
+    /* In PAR, ssat[].fix==2 means the ambiguity passed the original AR
+       screening and participates in z-space PAR. It does not mean the
+       corresponding satellite/frequency ambiguity is individually fixed. */
     minamb=MAX(PAR_MIN_AMB_DIM,rtk->opt.minfixsats-1);
     if (nb0<minamb) {
         errmsg(rtk,"not enough PAR ambiguities (nb=%d min=%d)\n",nb0,minamb);
@@ -391,49 +399,58 @@ static int resamb_PAR(rtk_t *rtk, double *bias, double *xa,
         return -1;
     }
 
-    DP=mat(nb0,nx-na); y0=mat(nb0,1); Qb0=mat(nb0,nb0);
-    Qab0=mat(na,nb0); map=imat(nb0,1);
-    y=mat(nb0,1); Qb=mat(nb0,nb0); Qab=mat(na,nb0);
+    DP=mat(nb0,nx-na); a=mat(nb0,1); Qaa=mat(nb0,nb0);
+    Qab=mat(na,nb0); Z=mat(nb0,nb0); z=mat(nb0,1);
+    Qzz=mat(nb0,nb0); L=mat(nb0,nb0); D=mat(nb0,1);
+    Qbz=mat(na,nb0);
 
-    par_build_full_dd_mats(rtk,ix,nb0,y0,DP,Qb0,Qab0);
-    if (!par_fixed_pos_trace(rtk,Qab0,Qb0,nb0,&tr_full)) {
+    par_build_full_dd_mats(rtk,ix,nb0,a,DP,Qaa,Qab);
+    if (lambda_reduction_info(nb0,a,Qaa,Z,z,Qzz,L,D)) {
+        errmsg(rtk,"PAR lambda reduction failed (nb=%d)\n",nb0);
+        free(ix); free(DP); free(a); free(Qaa); free(Qab);
+        free(Z); free(z); free(Qzz); free(L); free(D); free(Qbz);
+        return 0;
+    }
+    matmul("NN",na,nb0,nb0,Qab,Z,Qbz);
+    if (!par_fixed_pos_trace_z(rtk,Qbz,Qzz,nb0,&tr_full)) {
         errmsg(rtk,"PAR full fixed covariance failed (nb=%d)\n",nb0);
     }
-    for (i=0;i<nb0;i++) map[i]=i;
 
 #ifdef TRACE
     {
+        int i;
         double *QQb=mat(nb0,1);
-        for (i=0;i<nb0;i++) QQb[i]=1000*Qb0[i+i*nb0];
-        trace(3,"PAR N(0)=     "); tracemat(3,y0,1,nb0,7,2);
+        for (i=0;i<nb0;i++) QQb[i]=1000*Qaa[i+i*nb0];
+        trace(3,"PAR a(0)=     "); tracemat(3,a,1,nb0,7,2);
+        trace(3,"PAR z(0)=     "); tracemat(3,z,1,nb0,7,2);
         trace(3,"PAR Qb*1000=  "); tracemat(3,QQb,1,nb0,7,4);
+        trace(3,"PAR D=        "); tracemat(3,D,1,nb0,10,4);
         free(QQb);
     }
 #endif
 
     nb=0;
-    for (p=nb0;p>=minamb;p--) {
-        par_build_subset_mats(nb0,p,map,y0,Qb0,Qab0,na,y,Qb,Qab);
-        rtk->nb_ar=p;
-        if (par_try_subset(rtk,y,Qb,Qab,p,minamb,tr_full,bias)) {
-            par_apply_subset_fix_flags(rtk,ix,map,p);
-            restamb(rtk,bias,p,xa);
-            nb=p;
+    /* TC-PAR subset selection is performed in the reduced z-space. LAMBDA
+       reduction orders D so the low-precision ambiguities are at the front;
+       each failed attempt removes the next leading z ambiguity and keeps the
+       tail subset z[start:n-1]. */
+    for (start=0;start<=nb0-minamb;start++) {
+        stat=par_try_z_subset(rtk,ix,nb0,start,Z,z,Qzz,L,D,Qab,tr_full,xa);
+        if (stat>0) {
+            nb=nb0-start;
+            rtk->nb_ar=nb;
             break;
         }
-        if (p==minamb) break;
-        drop=par_worst_dd_index(p,Qb);
-        trace(3,"PAR drop DD ambiguity subset-index=%d full-index=%d\n",
-              drop,map[drop]);
-        for (i=drop;i<p-1;i++) map[i]=map[i+1];
+        if (stat<0) break;
+        trace(3,"PAR drop reduced ambiguity z-index=%d\n",start);
     }
     if (nb<=0) {
         errmsg(rtk,"PAR ambiguity validation failed (nb=%d ratio=%.2f thresh=%.2f)\n",
                nb0,rtk->sol.ratio,rtk->sol.thres);
     }
 
-    free(ix); free(DP); free(y0); free(Qb0); free(Qab0);
-    free(map); free(y); free(Qb); free(Qab);
+    free(ix); free(DP); free(a); free(Qaa); free(Qab);
+    free(Z); free(z); free(Qzz); free(L); free(D); free(Qbz);
     return nb;
 }
 
@@ -441,7 +458,7 @@ static int resamb_PAR(rtk_t *rtk, double *bias, double *xa,
 static int manage_amb_PAR(rtk_t *rtk, double *bias, double *xa,
                           const int *sat, int nf, int ns)
 {
-    int gps1=-1,glo1=-1,sbas1=-1,gps2,glo2,sbas2,nb,rerun,dly;
+    int gps1=-1,glo1=-1,sbas1=-1,nb,rerun,dly;
     float ratio1,posvar=0;
 
     for (int i=0;i<3;i++) posvar+=rtk->P[i+i*rtk->nx];
@@ -495,8 +512,10 @@ static int manage_amb_PAR(rtk_t *rtk, double *bias, double *xa,
     }
 
     gps1=1;
-    glo1=(rtk->opt.navsys&SYS_GLO)?
-         (((rtk->opt.glomodear==GLO_ARMODE_FIXHOLD)&&!rtk->holdamb)?0:1):0;
+    /* PAR fix-and-hold is not implemented yet; treat GLO fix-and-hold as
+       continuous AR here instead of waiting for a hold event that will not
+       be generated in PAR mode. */
+    glo1=(rtk->opt.navsys&SYS_GLO)?1:0;
     sbas1=(rtk->opt.navsys&SYS_GLO)?glo1:((rtk->opt.navsys&SYS_SBS)?1:0);
 
     nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1);
@@ -527,13 +546,6 @@ static int manage_amb_PAR(rtk_t *rtk, double *bias, double *xa,
         }
     }
     rtk->sol.prev_ratio1=ratio1;
-
-    if ((rtk->opt.navsys&SYS_GLO)&&rtk->opt.glomodear==GLO_ARMODE_FIXHOLD&&
-        rtk->sol.ratio<rtk->sol.thres) {
-        glo2=sbas2=0;
-        gps2=rtk->opt.gpsmodear==0&&rtk->sol.ratio>=rtk->sol.thres?0:1;
-        if (glo1!=glo2||gps1!=gps2) nb=resamb_PAR(rtk,bias,xa,gps2,glo2,sbas2);
-    }
     if (excsat&&(rtk->sol.ratio<rtk->sol.thres)&&
         (rtk->sol.ratio<(1.5*rtk->sol.prev_ratio2))) {
         for (int f=0;f<nf;f++) rtk->ssat[excsat-1].lock[f]=lockc[f];

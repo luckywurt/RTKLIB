@@ -2186,11 +2186,20 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
 
                     /* hold integer ambiguity if meet minfix count */
                     if (++rtk->nfix>=rtk->opt.minfix) {
+                        if (USE_PAR_FFRT&&rtk->opt.modear==ARMODE_FIXHOLD) {
+                            /* TODO: implement PAR fix-and-hold with constraints
+                               in the fixed z_p space. The legacy holdamb()
+                               assumes original DD ambiguities and ssat[].fix[]
+                               identify individually fixed satellites, which is
+                               not true for z-space PAR subsets. For now PAR
+                               fix-and-hold degrades to continuous AR. */
+                        }
                         // Note that the modear needs to be fix-and-hold in
                         // order for glomodear fix-and-hold to be applied here,
                         // to prevent glomodear alone forcing fix-and-hold.
-                        if (rtk->opt.modear==ARMODE_FIXHOLD)
+                        else if (rtk->opt.modear==ARMODE_FIXHOLD) {
                             holdamb(rtk,xa);
+                        }
                         /* switch to kinematic after qualify for hold if in static-start mode */
                         if (rtk->opt.mode==PMODE_STATIC_START) {
                             rtk->opt.mode=PMODE_KINEMA;
