@@ -49,6 +49,7 @@
 *-----------------------------------------------------------------------------*/
 #include <stdarg.h>
 #include "rtklib.h"
+#define RTKPOS_INCLUDE_RTKALG
 #include "rtkalg.c"
 
 /* algorithm configuration -------------------------------------------------- */
@@ -2000,7 +2001,7 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
     prcopt_t *opt=&rtk->opt;
     gtime_t time=obs[0].time;
     double *rs,*dts,*var,*y,*e,*azel,*freq,*v,*H,*R,*xp,*Pp,*xa,*bias,dt;
-    int i,j,f,n=nu+nr,ns,ny,nv,sat[MAXSAT],iu[MAXSAT],ir[MAXSAT];
+    int i,j,f,n=nu+nr,ns,ny,nv,nb,sat[MAXSAT],iu[MAXSAT],ir[MAXSAT];
     int info,refsat[6][NFREQ*2],vflg[MAXOBS*NFREQ*2+1],svh[MAXOBS*2];
     int stat=rtk->opt.mode<=PMODE_DGPS?SOLQ_DGPS:SOLQ_FLOAT;
     int nf=opt->ionoopt==IONOOPT_IFLC?1:opt->nf;
@@ -2167,10 +2168,12 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
         }
         else stat=SOLQ_NONE;
     }
-    /* resolve integer ambiguity by LAMBDA */
+    /* resolve integer ambiguity by LAMBDA/PAR */
     if (stat==SOLQ_FLOAT) {
         /* if valid fixed solution, process it */
-        if (manage_amb_LAMBDA(rtk,bias,xa,sat,nf,ns)>1) {
+        nb=USE_PAR_FFRT?manage_amb_PAR(rtk,bias,xa,sat,nf,ns):
+                         manage_amb_LAMBDA(rtk,bias,xa,sat,nf,ns);
+        if (nb>1) {
 
             /* find zero-diff residuals for fixed solution */
             if (zdres(0,obs,nu,rs,dts,var,svh,nav,xa,opt,y,e,azel,freq)) {

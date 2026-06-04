@@ -1,8 +1,10 @@
 /* rtk algorithm helpers -----------------------------------------------------*/
 #include "rtklib.h"
 
-#define REFSEL_ELMAX 0       /* reference satellite selection: elevation */
-#define REFSEL_GEOM  1       /* reference satellite selection: geometry */
+#ifndef USE_PAR_FFRT
+#define USE_PAR_FFRT 1      /* temporary switch: 0=LAMBDA, 1=PAR+B-FFRT */
+#endif
+
 #define REFSEL_ELMIN (45.0*D2R) /* min elevation for geometry reference sat */
 #define REFSEL_SNRMIN 35.0   /* min rover/base snr for geometry reference */
 #define REFSEL_ALPHA 0.2     /* variance term weight for geometry score */
@@ -23,6 +25,528 @@ extern double varerr(int sat, int sys, double el, double snr_rover,
 extern double baseline(const double *ru, const double *rb, double *dr);
 extern int validobs(int i, int j, int f, int nf, double *y);
 extern int test_sys(int sys, int m);
+
+#ifdef RTKPOS_INCLUDE_RTKALG
+
+#define PAR_SUCCESS_RATE_THRES 0.995 /* bootstrapping success-rate threshold */
+#define PAR_MIN_AMB_DIM       8      /* min fixed DD ambiguity subset size */
+#define PAR_BPD_MAX           10.0   /* max baseline precision defect */
+#define PAR_FFRT_CMIN         2.0    /* bounded FFRT minimum ratio */
+#define PAR_RATIO_EPS         1E-12  /* ratio denominator protection */
+#define PAR_FFRT_XMIN         1E-6   /* minimum ILS failure-rate estimate */
+#define PAR_FFRT_XMAX         0.2    /* failure-rate rejection threshold */
+
+static void errmsg(rtk_t *rtk, const char *format, ...);
+static int ddidx(rtk_t *rtk, int *ix, int gps, int glo, int sbs);
+static void restamb(rtk_t *rtk, const double *bias, int nb, double *xa);
+
+static const double par_ffrt_coeffs[62][3]={
+    {0.3364,-0.2968,-0.3335},{0.4401,-0.2435,-0.3686},
+    {0.3794,-0.2521,-0.2291},{0.2904,-0.2793,-0.0730},
+    {0.2874,-0.2702,-0.0146},{0.1797,-0.3314, 0.1593},
+    {0.1569,-0.3439, 0.2290},{0.1310,-0.3615, 0.2998},
+    {0.0793,-0.4428, 0.3928},{0.0839,-0.4222, 0.4166},
+    {0.0721,-0.4411, 0.4563},{0.0700,-0.4381, 0.4825},
+    {0.0664,-0.4378, 0.5096},{0.0645,-0.4339, 0.5321},
+    {0.0674,-0.4175, 0.5449},{0.0683,-0.4074, 0.5598},
+    {0.0647,-0.4090, 0.5783},{0.0659,-0.3980, 0.5912},
+    {0.0661,-0.3910, 0.6039},{0.0514,-0.4286, 0.6342},
+    {0.0519,-0.4202, 0.6435},{0.0529,-0.4098, 0.6531},
+    {0.0425,-0.4442, 0.6762},{0.0381,-0.4575, 0.6916},
+    {0.0458,-0.4183, 0.6885},{0.0386,-0.4443, 0.7059},
+    {0.0387,-0.4380, 0.7124},{0.0385,-0.4329, 0.7204},
+    {0.0384,-0.4287, 0.7267},{0.0393,-0.4191, 0.7318},
+    {0.0360,-0.4300, 0.7419},{0.0392,-0.4103, 0.7426},
+    {0.0345,-0.4277, 0.7549},{0.0323,-0.4356, 0.7627},
+    {0.0300,-0.4443, 0.7704},{0.0286,-0.4493, 0.7759},
+    {0.0264,-0.4594, 0.7842},{0.0245,-0.4695, 0.7904},
+    {0.0267,-0.4501, 0.7905},{0.0254,-0.4545, 0.7966},
+    {0.0249,-0.4550, 0.8004},{0.0249,-0.4505, 0.8036},
+    {0.0269,-0.4332, 0.8037},{0.0237,-0.4527, 0.8119},
+    {0.0250,-0.4390, 0.8129},{0.0255,-0.4322, 0.8148},
+    {0.0259,-0.4265, 0.8167},{0.0231,-0.4418, 0.8240},
+    {0.0217,-0.4504, 0.8280},{0.0220,-0.4457, 0.8305},
+    {0.0253,-0.4180, 0.8279},{0.0211,-0.4461, 0.8367},
+    {0.0193,-0.4585, 0.8414},{0.0166,-0.4850, 0.8472},
+    {0.0243,-0.4120, 0.8373},{0.0179,-0.4638, 0.8492},
+    {0.0205,-0.4360, 0.8478},{0.0195,-0.4434, 0.8505},
+    {0.0145,-0.4951, 0.8605},{0.0166,-0.4634, 0.8581},
+    {0.0149,-0.4873, 0.8628},{0.0071,-0.6131, 0.8773}
+};
+
+/* LD factorization for conditional variances Q=L'*D*L ----------------------*/
+static int par_ld_condvar(int n, const double *Q, double *D)
+{
+    double *A=mat(n,n),*L=mat(n,n),a;
+    int i,j,k,info=0;
+
+    memcpy(A,Q,sizeof(double)*n*n);
+    for (i=n-1;i>=0;i--) {
+        if ((D[i]=A[i+i*n])<=0.0) {
+            info=-1;
+            break;
+        }
+        a=sqrt(D[i]);
+        for (j=0;j<=i;j++) L[i+j*n]=A[i+j*n]/a;
+        for (j=0;j<=i-1;j++) for (k=0;k<=j;k++) {
+            A[j+k*n]-=L[i+k*n]*L[i+j*n];
+        }
+        for (j=0;j<=i;j++) L[i+j*n]/=L[i+i*n];
+    }
+    free(A); free(L);
+    return info;
+}
+
+/* standard normal cdf approximation ----------------------------------------*/
+static double par_norm_cdf(double x)
+{
+    double t,d,prob;
+    int neg=x<0.0;
+
+    if (neg) x=-x;
+    t=1.0/(1.0+0.2316419*x);
+    d=0.3989422804014327*exp(-0.5*x*x);
+    prob=1.0-d*t*(0.319381530+t*(-0.356563782+
+         t*(1.781477937+t*(-1.821255978+t*1.330274429))));
+    return neg?1.0-prob:prob;
+}
+
+/* bootstrapping success rate from conditional variances ---------------------*/
+static double par_bootstrap_success(int n, const double *D)
+{
+    double ps=1.0,arg,p;
+    int i;
+
+    for (i=0;i<n;i++) {
+        if (D[i]<=0.0) return 0.0;
+        arg=0.5/sqrt(D[i]);
+        p=2.0*par_norm_cdf(arg)-1.0;
+        if (p<0.0) p=0.0;
+        else if (p>1.0) p=1.0;
+        ps*=p;
+    }
+    return ps;
+}
+
+/* B-FFRT threshold for ratio definition R=s2/s1 ----------------------------*/
+static int par_bffrt_threshold(int p, double ps, double *thres)
+{
+    const double *c;
+    double x,mu;
+
+    if (p<PAR_MIN_AMB_DIM) return 0;
+    if (p>65) p=65;
+
+    x=1.0-ps;
+    if (x<PAR_FFRT_XMIN) x=PAR_FFRT_XMIN;
+    if (x>=PAR_FFRT_XMAX) return 0;
+
+    if (x<0.01) mu=1.0;
+    else {
+        c=par_ffrt_coeffs[p-4];
+        mu=c[0]*pow(x,c[1])+c[2];
+    }
+    if (mu<=0.0) return 0;
+    if (mu>1.0) mu=1.0;
+
+    *thres=MAX(1.0/mu,PAR_FFRT_CMIN);
+    return 1;
+}
+
+/* copy full DD ambiguity model into a selected subset -----------------------*/
+static void par_build_subset_mats(int nb, int p, const int *map,
+                                  const double *y0, const double *Qb0,
+                                  const double *Qab0, int na,
+                                  double *y, double *Qb, double *Qab)
+{
+    int i,j;
+
+    for (i=0;i<p;i++) y[i]=y0[map[i]];
+    for (j=0;j<p;j++) for (i=0;i<p;i++) {
+        Qb[i+j*p]=Qb0[map[i]+map[j]*nb];
+    }
+    for (j=0;j<p;j++) for (i=0;i<na;i++) {
+        Qab[i+j*na]=Qab0[i+map[j]*na];
+    }
+}
+
+/* build full DD float ambiguities and covariance matrices -------------------*/
+static void par_build_full_dd_mats(const rtk_t *rtk, const int *ix, int nb,
+                                   double *y, double *DP, double *Qb,
+                                   double *Qab)
+{
+    int i,j,nx=rtk->nx,na=rtk->na;
+
+    for (i=0;i<nb;i++) {
+        y[i]=rtk->x[ix[i*2]]-rtk->x[ix[i*2+1]];
+    }
+    for (j=0;j<nx-na;j++) for (i=0;i<nb;i++) {
+        DP[i+j*nb]=rtk->P[ix[i*2]+(na+j)*nx]-
+                   rtk->P[ix[i*2+1]+(na+j)*nx];
+    }
+    for (j=0;j<nb;j++) for (i=0;i<nb;i++) {
+        Qb[i+j*nb]=DP[i+(ix[j*2]-na)*nb]-
+                   DP[i+(ix[j*2+1]-na)*nb];
+    }
+    for (j=0;j<nb;j++) for (i=0;i<na;i++) {
+        Qab[i+j*na]=rtk->P[i+ix[j*2]*nx]-
+                    rtk->P[i+ix[j*2+1]*nx];
+    }
+}
+
+/* trace of fixed position covariance for a selected ambiguity set -----------*/
+static int par_fixed_pos_trace(const rtk_t *rtk, const double *Qab,
+                               const double *Qb, int nb, double *tr)
+{
+    int i,j,nx=rtk->nx,na=rtk->na;
+    double *Qbi,*QQ,*Pa;
+
+    if (na<3||nb<=0) return 0;
+
+    Qbi=mat(nb,nb); QQ=mat(na,nb); Pa=mat(na,na);
+    matcpy(Qbi,Qb,nb,nb);
+    for (j=0;j<na;j++) for (i=0;i<na;i++) {
+        Pa[i+j*na]=rtk->P[i+j*nx];
+    }
+    if (matinv(Qbi,nb)) {
+        free(Qbi); free(QQ); free(Pa);
+        return 0;
+    }
+    matmul("NN",na,nb,nb,Qab,Qbi,QQ);
+    matmulm("NT",na,na,nb,QQ,Qab,Pa);
+    *tr=Pa[0]+Pa[1+na]+Pa[2+2*na];
+
+    free(Qbi); free(QQ); free(Pa);
+    return *tr>0.0;
+}
+
+/* baseline precision defect check ------------------------------------------*/
+static int par_bpd_ok(const rtk_t *rtk, const double *Qab, const double *Qb,
+                      int nb, double tr_full, double *bpd)
+{
+    double tr_float,tr_part;
+    int nx=rtk->nx;
+
+    if (tr_full<=0.0) return 0;
+    tr_float=rtk->P[0]+rtk->P[1+nx]+rtk->P[2+2*nx];
+    if (tr_float<=0.0) return 0;
+    if (!par_fixed_pos_trace(rtk,Qab,Qb,nb,&tr_part)) return 0;
+    *bpd=sqrt(tr_float/tr_full)-sqrt(tr_float/tr_part);
+    return *bpd<=PAR_BPD_MAX;
+}
+
+/* select DD ambiguity with largest conditional variance for removal ---------*/
+static int par_worst_dd_index(int n, const double *Qb)
+{
+    double *D=mat(n,1),worst;
+    int i,drop=0;
+
+    if (par_ld_condvar(n,Qb,D)) {
+        for (i=0;i<n;i++) D[i]=Qb[i+i*n];
+    }
+    worst=D[0];
+    for (i=1;i<n;i++) {
+        if (D[i]>worst) {
+            worst=D[i];
+            drop=i;
+        }
+    }
+    free(D);
+    return drop;
+}
+
+static int par_state_sat_freq(const rtk_t *rtk, int index, int *sat, int *f)
+{
+    int off=index-rtk->na;
+
+    if (off<0) return 0;
+    *f=off/MAXSAT;
+    *sat=off%MAXSAT+1;
+    return *sat>=1&&*sat<=MAXSAT&&*f>=0&&*f<NFREQ;
+}
+
+/* apply PAR subset to ssat fix flags so restamb() consumes matching DD order -*/
+static void par_apply_subset_fix_flags(rtk_t *rtk, const int *ix, const int *map,
+                                       int p)
+{
+    int i,j,sat,f;
+
+    for (i=0;i<MAXSAT;i++) for (j=0;j<NFREQ;j++) {
+        if (rtk->ssat[i].fix[j]==2) rtk->ssat[i].fix[j]=1;
+    }
+    for (i=0;i<p;i++) {
+        if (par_state_sat_freq(rtk,ix[map[i]*2],&sat,&f)) {
+            rtk->ssat[sat-1].fix[f]=2;
+        }
+        if (par_state_sat_freq(rtk,ix[map[i]*2+1],&sat,&f)) {
+            rtk->ssat[sat-1].fix[f]=2;
+        }
+    }
+}
+
+/* try to fix a selected DD ambiguity subset by SRC, B-FFRT and BPD ----------*/
+static int par_try_subset(rtk_t *rtk, const double *y, const double *Qb,
+                          const double *Qab, int nb, int minamb,
+                          double tr_full, double *bias)
+{
+    int i,j,info,nx=rtk->nx,na=rtk->na;
+    double *D,*b,*db,*dy,*Qbi,*QQ,s[2],ps,ratio,thres,bpd;
+
+    if (nb<minamb) return 0;
+
+    D=mat(nb,1);
+    if (par_ld_condvar(nb,Qb,D)) {
+        free(D);
+        errmsg(rtk,"PAR LD factorization failed (nb=%d)\n",nb);
+        return 0;
+    }
+    ps=par_bootstrap_success(nb,D);
+    free(D);
+    if (ps<PAR_SUCCESS_RATE_THRES) {
+        trace(3,"PAR SRC failed (nb=%d ps=%.6f thres=%.6f)\n",
+              nb,ps,PAR_SUCCESS_RATE_THRES);
+        return 0;
+    }
+    if (!par_bffrt_threshold(nb,ps,&thres)) {
+        trace(3,"PAR FFRT threshold failed (nb=%d ps=%.6f)\n",nb,ps);
+        return 0;
+    }
+    rtk->sol.thres=(float)thres;
+
+    b=mat(nb,2); db=mat(nb,1); dy=mat(nb,1);
+    Qbi=mat(nb,nb); QQ=mat(na,nb);
+
+    if ((info=lambda(nb,2,y,Qb,b,s))) {
+        errmsg(rtk,"PAR lambda error (info=%d nb=%d)\n",info,nb);
+        free(b); free(db); free(dy); free(Qbi); free(QQ);
+        return 0;
+    }
+    ratio=s[0]>PAR_RATIO_EPS?s[1]/s[0]:999.9;
+    rtk->sol.ratio=(float)MIN(ratio,999.9);
+
+    trace(3,"PAR N(1)=     "); tracemat(3,b   ,1,nb,7,2);
+    trace(3,"PAR N(2)=     "); tracemat(3,b+nb,1,nb,7,2);
+
+    if (ratio<thres) {
+        errmsg(rtk,"PAR FFRT failed (nb=%d ratio=%.2f thresh=%.2f ps=%.6f s=%.2f/%.2f)\n",
+               nb,ratio,thres,ps,s[0],s[1]);
+        free(b); free(db); free(dy); free(Qbi); free(QQ);
+        return 0;
+    }
+    if (!par_bpd_ok(rtk,Qab,Qb,nb,tr_full,&bpd)) {
+        errmsg(rtk,"PAR BPD failed (nb=%d ratio=%.2f thresh=%.2f ps=%.6f)\n",
+               nb,ratio,thres,ps);
+        free(b); free(db); free(dy); free(Qbi); free(QQ);
+        return 0;
+    }
+
+    for (i=0;i<na;i++) {
+        rtk->xa[i]=rtk->x[i];
+        for (j=0;j<na;j++) rtk->Pa[i+j*na]=rtk->P[i+j*nx];
+    }
+    for (i=0;i<nb;i++) {
+        bias[i]=b[i];
+        dy[i]=y[i]-b[i];
+    }
+    matcpy(Qbi,Qb,nb,nb);
+    if (matinv(Qbi,nb)) {
+        free(b); free(db); free(dy); free(Qbi); free(QQ);
+        return 0;
+    }
+    matmul("NN",nb,1,nb,Qbi,dy,db);
+    matmulm("NN",na,1,nb,Qab,db,rtk->xa);
+    matmul("NN",na,nb,nb,Qab,Qbi,QQ);
+    matmulm("NT",na,na,nb,QQ,Qab,rtk->Pa);
+
+    trace(3,"PAR validation ok (nb=%d ratio=%.2f thresh=%.2f ps=%.6f bpd=%.2f s=%.2f/%.2f)\n",
+          nb,ratio,thres,ps,bpd,s[0],s[1]);
+
+    free(b); free(db); free(dy); free(Qbi); free(QQ);
+    return 1;
+}
+
+/* resolve integer ambiguity by PAR with SRC, B-FFRT and BPD -----------------*/
+static int resamb_PAR(rtk_t *rtk, double *bias, double *xa,
+                      int gps, int glo, int sbs)
+{
+    int i,nb,nb0,p,drop,minamb,nx=rtk->nx,na=rtk->na,*ix,*map;
+    double *DP,*y0,*Qb0,*Qab0,*y,*Qb,*Qab,tr_full=0.0;
+
+    trace(3,"resamb_PAR : nx=%d\n",nx);
+
+    rtk->sol.ratio=0.0;
+    rtk->sol.thres=(float)PAR_FFRT_CMIN;
+    rtk->nb_ar=0;
+
+    ix=imat(nx,2);
+    if ((nb0=ddidx(rtk,ix,gps,glo,sbs))<(rtk->opt.minfixsats-1)) {
+        errmsg(rtk,"not enough valid double-differences for PAR\n");
+        free(ix);
+        return -1;
+    }
+    minamb=MAX(PAR_MIN_AMB_DIM,rtk->opt.minfixsats-1);
+    if (nb0<minamb) {
+        errmsg(rtk,"not enough PAR ambiguities (nb=%d min=%d)\n",nb0,minamb);
+        free(ix);
+        return -1;
+    }
+
+    DP=mat(nb0,nx-na); y0=mat(nb0,1); Qb0=mat(nb0,nb0);
+    Qab0=mat(na,nb0); map=imat(nb0,1);
+    y=mat(nb0,1); Qb=mat(nb0,nb0); Qab=mat(na,nb0);
+
+    par_build_full_dd_mats(rtk,ix,nb0,y0,DP,Qb0,Qab0);
+    if (!par_fixed_pos_trace(rtk,Qab0,Qb0,nb0,&tr_full)) {
+        errmsg(rtk,"PAR full fixed covariance failed (nb=%d)\n",nb0);
+    }
+    for (i=0;i<nb0;i++) map[i]=i;
+
+#ifdef TRACE
+    {
+        double *QQb=mat(nb0,1);
+        for (i=0;i<nb0;i++) QQb[i]=1000*Qb0[i+i*nb0];
+        trace(3,"PAR N(0)=     "); tracemat(3,y0,1,nb0,7,2);
+        trace(3,"PAR Qb*1000=  "); tracemat(3,QQb,1,nb0,7,4);
+        free(QQb);
+    }
+#endif
+
+    nb=0;
+    for (p=nb0;p>=minamb;p--) {
+        par_build_subset_mats(nb0,p,map,y0,Qb0,Qab0,na,y,Qb,Qab);
+        rtk->nb_ar=p;
+        if (par_try_subset(rtk,y,Qb,Qab,p,minamb,tr_full,bias)) {
+            par_apply_subset_fix_flags(rtk,ix,map,p);
+            restamb(rtk,bias,p,xa);
+            nb=p;
+            break;
+        }
+        if (p==minamb) break;
+        drop=par_worst_dd_index(p,Qb);
+        trace(3,"PAR drop DD ambiguity subset-index=%d full-index=%d\n",
+              drop,map[drop]);
+        for (i=drop;i<p-1;i++) map[i]=map[i+1];
+    }
+    if (nb<=0) {
+        errmsg(rtk,"PAR ambiguity validation failed (nb=%d ratio=%.2f thresh=%.2f)\n",
+               nb0,rtk->sol.ratio,rtk->sol.thres);
+    }
+
+    free(ix); free(DP); free(y0); free(Qb0); free(Qab0);
+    free(map); free(y); free(Qb); free(Qab);
+    return nb;
+}
+
+/* resolve integer ambiguity by PAR using same management policy as LAMBDA ----*/
+static int manage_amb_PAR(rtk_t *rtk, double *bias, double *xa,
+                          const int *sat, int nf, int ns)
+{
+    int gps1=-1,glo1=-1,sbas1=-1,gps2,glo2,sbas2,nb,rerun,dly;
+    float ratio1,posvar=0;
+
+    for (int i=0;i<3;i++) posvar+=rtk->P[i+i*rtk->nx];
+    posvar/=3.0;
+
+    trace(3,"PAR posvar=%.6f\n",posvar);
+    trace(3,"PAR prevRatios= %.3f %.3f\n",
+          rtk->sol.prev_ratio1,rtk->sol.prev_ratio2);
+    trace(3,"PAR num ambiguities used last AR: %d\n",rtk->nb_ar);
+
+    if (rtk->opt.mode<=PMODE_DGPS||rtk->opt.modear==ARMODE_OFF||
+        rtk->opt.thresar[0]<1.0||posvar>rtk->opt.thresar[1]) {
+        trace(3,"Skip PAR AR\n");
+        rtk->sol.ratio=0.0;
+        rtk->sol.prev_ratio1=rtk->sol.prev_ratio2=0.0;
+        rtk->nb_ar=0;
+        return 0;
+    }
+
+    int lockc[NFREQ],excsat=0;
+    if (rtk->sol.prev_ratio2<rtk->sol.thres&&rtk->nb_ar>=rtk->opt.mindropsats) {
+        int i=0;
+        if (rtk->excsat!=0) {
+            for (;i<ns;i++) {
+                if (rtk->excsat==sat[i]) {
+                    i++;
+                    break;
+                }
+            }
+            if (i>=ns) i=0;
+        }
+        for (;i<ns;i++) {
+            for (int f=0;f<nf;f++) {
+                if (rtk->ssat[sat[i]-1].vsat[f]&&
+                    rtk->ssat[sat[i]-1].lock[f]>=0&&
+                    rtk->ssat[sat[i]-1].azel[1]>=rtk->opt.elmin) {
+                    excsat=sat[i];
+                    break;
+                }
+            }
+            if (excsat) break;
+        }
+        if (excsat) {
+            for (int f=0;f<nf;f++) {
+                lockc[f]=rtk->ssat[excsat-1].lock[f];
+                rtk->ssat[excsat-1].lock[f]=-rtk->nb_ar;
+            }
+            trace(3,"PAR AR: exclude sat %d\n",excsat);
+        }
+        rtk->excsat=excsat;
+    }
+
+    gps1=1;
+    glo1=(rtk->opt.navsys&SYS_GLO)?
+         (((rtk->opt.glomodear==GLO_ARMODE_FIXHOLD)&&!rtk->holdamb)?0:1):0;
+    sbas1=(rtk->opt.navsys&SYS_GLO)?glo1:((rtk->opt.navsys&SYS_SBS)?1:0);
+
+    nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1);
+    ratio1=rtk->sol.ratio;
+
+    if (rtk->opt.arfilter) {
+        rerun=0;
+        if (nb>=0&&rtk->sol.prev_ratio2>=rtk->sol.thres&&
+            ((rtk->sol.ratio<rtk->sol.thres)||
+             (rtk->sol.ratio<rtk->opt.thresar[0]*1.1&&
+              rtk->sol.ratio<rtk->sol.prev_ratio1/2.0))) {
+            trace(3,"PAR low ratio: check for new sat\n");
+            dly=2;
+            for (int i=0;i<ns;i++) for (int f=0;f<nf;f++) {
+                if (rtk->ssat[sat[i]-1].fix[f]!=2) continue;
+                if (rtk->ssat[sat[i]-1].lock[f]==0) {
+                    trace(3,"PAR remove sat %d:%d lock=%d\n",
+                          sat[i],f,rtk->ssat[sat[i]-1].lock[f]);
+                    rtk->ssat[sat[i]-1].lock[f]=-rtk->opt.minlock-dly;
+                    dly+=2;
+                    rerun=1;
+                }
+            }
+        }
+        if (rerun) {
+            trace(3,"rerun PAR AR with new sats removed\n");
+            nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1);
+        }
+    }
+    rtk->sol.prev_ratio1=ratio1;
+
+    if ((rtk->opt.navsys&SYS_GLO)&&rtk->opt.glomodear==GLO_ARMODE_FIXHOLD&&
+        rtk->sol.ratio<rtk->sol.thres) {
+        glo2=sbas2=0;
+        gps2=rtk->opt.gpsmodear==0&&rtk->sol.ratio>=rtk->sol.thres?0:1;
+        if (glo1!=glo2||gps1!=gps2) nb=resamb_PAR(rtk,bias,xa,gps2,glo2,sbas2);
+    }
+    if (excsat&&(rtk->sol.ratio<rtk->sol.thres)&&
+        (rtk->sol.ratio<(1.5*rtk->sol.prev_ratio2))) {
+        for (int f=0;f<nf;f++) rtk->ssat[excsat-1].lock[f]=lockc[f];
+        trace(3,"PAR AR: restore sat %d\n",excsat);
+    }
+
+    rtk->sol.prev_ratio1=ratio1>0?ratio1:rtk->sol.ratio;
+    rtk->sol.prev_ratio2=rtk->sol.ratio;
+
+    return nb;
+}
+
+#endif /* RTKPOS_INCLUDE_RTKALG */
 
 /* select reference satellites by highest elevation --------------------------*/
 static void select_sat_elmax(rtk_t *rtk, const int *sat, double *y,
