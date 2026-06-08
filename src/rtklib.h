@@ -55,8 +55,10 @@ extern "C" {
 #ifdef _MSC_VER
 #ifdef WIN_DLL /* for Windows DLL */
 #define EXPORT __declspec(dllexport)
-#else
+#elif !defined(WIN_STATIC)
 #define EXPORT __declspec(dllimport)
+#else
+#define EXPORT // For files bundled into an app.
 #endif
 #else
 #define EXPORT
@@ -67,7 +69,7 @@ extern "C" {
 #elif defined(__GNUC__)
 #define THREADLOCAL __thread
 #elif defined(_MSC_VER)
-#define THREADLOCAL __declspec(__thread)
+#define THREADLOCAL __declspec(thread)
 #else
 #define THREADLOCAL
 #endif
@@ -562,7 +564,11 @@ extern "C" {
 #define rtklib_unlock(f)   LeaveCriticalSection(f)
 #define RTKLIB_FILEPATHSEP '\\'
 /* strtok_r not supported in Windows */
+#ifdef _MSC_VER
+#define strtok_r(str,delim,ptr) strtok_s(str,delim,ptr)
+#else
 #define strtok_r(str,delim,ptr) strtok(str,delim)
+#endif
 #else
 #define rtklib_thread_t    pthread_t
 #define rtklib_lock_t      pthread_mutex_t
@@ -1257,7 +1263,6 @@ typedef struct {        /* receiver raw data control type */
     uint8_t subfrm[MAXSAT][380]; /* subframe buffer */
     double lockt[MAXSAT][NFREQ+NEXOBS]; /* lock time (s) */
     unsigned char lockflag[MAXSAT][NFREQ+NEXOBS]; /* used for carrying forward cycle slip */
-    double icpp[MAXSAT],off[MAXSAT],icpc; /* carrier params for ss2 */
     double prCA[MAXSAT],dpCA[MAXSAT]; /* L1/CA pseudorange/doppler for javad */
     uint8_t halfc[MAXSAT][NFREQ+NEXOBS]; /* half-cycle resolved */
     char freqn[MAXOBS]; /* frequency number for javad */

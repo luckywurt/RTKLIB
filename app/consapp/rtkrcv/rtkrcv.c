@@ -64,7 +64,7 @@
 #define NAVIFILE    "rtkrcv.nav"        /* navigation save file */
 #define STATFILE    "rtkrcv_%Y%m%d%h%M.stat"  /* solution status file */
 #define TRACEFILE   "rtkrcv_%Y%m%d%h%M.trace" /* debug trace file */
-#define LOGFILE     "rtkrcv_%Y%m%d%h%M.log"   /* Deamon log file */
+#define LOGFILE     "rtkrcv_%Y%m%d%h%M.log"   /* Daemon log file */
 #define INTKEEPALIVE 1000               /* keep alive interval (ms) */
 
 #define ESC_CLEAR   "\033[H\033[2J"     /* ansi/vt100 escape: erase screen */
@@ -139,7 +139,7 @@ static const char *usage[]={
     "  -r level   output solution status file (0:off,1:states,2:residuals)",
     "  -t level   debug trace level (0:off,1-5:on)",
     "  -sta sta   station name for receiver dcb",
-    "  --deamon   detach from the console",
+    "  --daemon   detach from the console",
     "  --version  print the version and exit"
 };
 static const char *helptxt[]={
@@ -150,9 +150,9 @@ static const char *helptxt[]={
     "status [cycle]        : show rtk status",
     "satellite [-n] [cycle]: show satellite status",
     "observ [-n] [cycle]   : show observation data",
-    "navidata [cycle]      : show navigation data",
+    "navidata [-p] [-n] [cycle] : show navigation data",
     "stream [cycle]        : show stream status",
-    "ssr [-c] [-p] [cycle] : show ssr corrections",
+    "ssr [-[1,2,3]] [-c] [-p] [cycle] : show ssr corrections",
     "error                 : show error/warning messages",
     "option [opt]          : show option(s)",
     "set opt [val]         : set option",
@@ -680,9 +680,8 @@ static void prstatus(vt_t *vt)
     };
     gtime_t eventime={0};
     const char *freq[]={"-","L1","L1+L2","L1+L2+E5b","L1+L2+E5b+L5","5","6","7"};
-    rtcm_t rtcm[3];
     pthread_t thread;
-    int i,j,n,cycle,state,rtkstat,nsat0,nsat1,prcout,rcvcount,tmcount,timevalid,nave;
+    int j,cycle,state,rtkstat,nsat0,nsat1,prcout,rcvcount,tmcount,timevalid,nave;
     int cputime,nb[3]={0},nmsg[3][10]={{0}};
     char tstr[40],tmstr[40],s[1024],*p;
     double runtime,rt[3]={0},dop[4]={0},rr[3],bl1=0.0,bl2=0.0;
@@ -692,6 +691,12 @@ static void prstatus(vt_t *vt)
     
     rtk_t *rtk = (rtk_t *)malloc(sizeof(rtk_t));
     if (rtk == NULL) return;
+
+    rtcm_t *rtcm[3] = { NULL, NULL, NULL };
+    for (int i = 0; i < 3; i++) {
+      rtcm[i] = (rtcm_t *)malloc(sizeof(rtcm_t));
+      if (rtcm[i] == NULL) goto done;
+    }
 
     rtksvrlock(&svr);
     *rtk=svr.rtk;
@@ -706,8 +711,8 @@ static void prstatus(vt_t *vt)
     cputime=svr.cputime;
     prcout=svr.prcout;
     nave=svr.nave;
-    for (i=0;i<3;i++) nb[i]=svr.nb[i];
-    for (i=0;i<3;i++) for (j=0;j<10;j++) {
+    for (int i=0;i<3;i++) nb[i]=svr.nb[i];
+    for (int i=0;i<3;i++) for (j=0;j<10;j++) {
         nmsg[i][j]=svr.nmsg[i][j];
     }
     if (svr.state) {
@@ -715,15 +720,16 @@ static void prstatus(vt_t *vt)
         rt[0]=floor(runtime/3600.0); runtime-=rt[0]*3600.0;
         rt[1]=floor(runtime/60.0); rt[2]=runtime-rt[1]*60.0;
     }
-    for (i=0;i<3;i++) rtcm[i]=svr.rtcm[i];
+    for (int i=0;i<3;i++) *rtcm[i]=svr.rtcm[i];
     if (svr.raw[0].obs.data != NULL) {
         timevalid = svr.raw[0].obs.data[0].timevalid;
         eventime = svr.raw[0].obs.data[0].eventime;
     }
     time2str(eventime,tmstr,9);
     rtksvrunlock(&svr);
-    
-    for (i=n=0;i<MAXSAT;i++) {
+
+    int n = 0;
+    for (int i=0;i<MAXSAT;i++) {
         if (rtk->opt.mode == PMODE_SINGLE) {
           if (!rtk->ssat[i].vs) continue;
         } else {
@@ -749,31 +755,31 @@ static void prstatus(vt_t *vt)
     vt_printf(vt,"%-28s: %d\n","cpu time for a cycle (ms)",cputime);
     vt_printf(vt,"%-28s: %d\n","missing obs data count",prcout);
     vt_printf(vt,"%-28s: %d,%d\n","bytes in input buffer",nb[0],nb[1]);
-    for (i=0;i<3;i++) {
+    for (int i=0;i<3;i++) {
         sprintf(s,"# of input data %s",type[i]);
         vt_printf(vt,"%-28s: obs(%d),nav(%d),gnav(%d),ion(%d),sbs(%d),pos(%d),dgps(%d),ssr(%d),err(%d)\n",
                 s,nmsg[i][0],nmsg[i][1],nmsg[i][6],nmsg[i][2],nmsg[i][3],
                 nmsg[i][4],nmsg[i][5],nmsg[i][7],nmsg[i][9]);
     }
-    for (i=0;i<3;i++) {
+    for (int i=0;i<3;i++) {
         p=s; *p='\0';
         for (j=1;j<100;j++) {
-            if (rtcm[i].nmsg2[j]==0) continue;
-            p+=sprintf(p,"%s%d(%d)",p>s?",":"",j,rtcm[i].nmsg2[j]);
+            if (rtcm[i]->nmsg2[j]==0) continue;
+            p+=sprintf(p,"%s%d(%d)",p>s?",":"",j,rtcm[i]->nmsg2[j]);
         }
-        if (rtcm[i].nmsg2[0]>0) {
-            sprintf(p,"%sother2(%d)",p>s?",":"",rtcm[i].nmsg2[0]);
+        if (rtcm[i]->nmsg2[0]>0) {
+            sprintf(p,"%sother2(%d)",p>s?",":"",rtcm[i]->nmsg2[0]);
         }
         for (j=1;j<300;j++) {
-            if (rtcm[i].nmsg3[j]==0) continue;
-            p+=sprintf(p,"%s%d(%d)",p>s?",":"",j+1000,rtcm[i].nmsg3[j]);
+            if (rtcm[i]->nmsg3[j]==0) continue;
+            p+=sprintf(p,"%s%d(%d)",p>s?",":"",j+1000,rtcm[i]->nmsg3[j]);
         }
         for (j=300;j<399;j++) {
-            if (rtcm[i].nmsg3[j]==0) continue;
-            p+=sprintf(p,"%s%d(%d)",p>s?",":"",j+3770,rtcm[i].nmsg3[j]);
+            if (rtcm[i]->nmsg3[j]==0) continue;
+            p+=sprintf(p,"%s%d(%d)",p>s?",":"",j+3770,rtcm[i]->nmsg3[j]);
         }
-        if (rtcm[i].nmsg3[0]>0) {
-            sprintf(p,"%sother3(%d)",p>s?",":"",rtcm[i].nmsg3[0]);
+        if (rtcm[i]->nmsg3[0]>0) {
+            sprintf(p,"%sother3(%d)",p>s?",":"",rtcm[i]->nmsg3[0]);
         }
         vt_printf(vt,"%-15s %-9s: %s\n","# of rtcm messages",type[i],s);
     }
@@ -822,11 +828,11 @@ static void prstatus(vt_t *vt)
     vt_printf(vt,"%-28s: %.3f,%.3f,%.3f\n","vel enu (m/s) base",
             vel[0],vel[1],vel[2]);
     if (rtk->opt.mode>0&&rtk->x&&norm(rtk->x,3)>0.0) {
-        for (i=0;i<3;i++) rr[i]=rtk->x[i]-rtk->rb[i];
+        for (int i=0;i<3;i++) rr[i]=rtk->x[i]-rtk->rb[i];
         bl1=norm(rr,3);
     }
     if (rtk->opt.mode>0&&rtk->xa&&norm(rtk->xa,3)>0.0) {
-        for (i=0;i<3;i++) rr[i]=rtk->xa[i]-rtk->rb[i];
+        for (int i=0;i<3;i++) rr[i]=rtk->xa[i]-rtk->rb[i];
         bl2=norm(rr,3);
     }
     vt_printf(vt,"%-28s: %.3f\n","baseline length float (m)",bl1);
@@ -834,7 +840,10 @@ static void prstatus(vt_t *vt)
     vt_printf(vt,"%-28s: %s\n","last time mark",tmcount ? tmstr : "-");
     vt_printf(vt,"%-28s: %d\n","receiver time mark count",rcvcount);
     vt_printf(vt,"%-28s: %d\n","rtklib time mark count",tmcount);
+
+done:
     free(rtk);
+    for (int i = 0; i < 3; i++) free(rtcm[i]);
 }
 /* print satellite -----------------------------------------------------------*/
 static void prsatellite(vt_t *vt, int nf)
@@ -934,34 +943,39 @@ static void probserv(vt_t *vt, int nf)
     free(obs);
 }
 /* print navigation data -----------------------------------------------------*/
-static void prnavidata(vt_t *vt)
+static void prnavidata(vt_t *vt, int prev, int set)
 {
     eph_t eph[MAXSAT];
     geph_t geph[MAXPRNGLO];
     double ion[8],utc[8];
     gtime_t time;
     char id[8],s1[64],s2[64],s3[64];
-    int i,valid;
     
     trace(4,"prnavidata:\n");
-    
+
     rtksvrlock(&svr);
     time=svr.rtk.sol.time;
-    for (i=0;i<MAXSAT;i++) eph[i]=svr.nav.eph[i];
-    for (i=0;i<MAXPRNGLO;i++) geph[i]=svr.nav.geph[i];
-    for (i=0;i<8;i++) ion[i]=svr.nav.ion_gps[i];
-    for (i=0;i<8;i++) utc[i]=svr.nav.utc_gps[i];
+    if (set >= 0 && set <= 1 && prev >= 0 && prev <= 1)
+      for (int i = 0; i < MAXSAT; i++) eph[i] = svr.nav.eph[i + (prev * 2 + set) * MAXSAT];
+    else
+      memset(&eph, 0, sizeof(eph));
+    if (set >= 0 && set <= 0 && prev >= 0 && prev <= 1)
+      for (int i = 0; i < MAXPRNGLO; i++) geph[i] = svr.nav.geph[i + (prev * 1 + set) * MAXPRNGLO];
+    else
+      memset(&geph, 0, sizeof(geph));
+    for (int i=0;i<8;i++) ion[i]=svr.nav.ion_gps[i];
+    for (int i=0;i<8;i++) utc[i]=svr.nav.utc_gps[i];
     rtksvrunlock(&svr);
     
     vt_printf(vt,"\n%s%3s %3s %3s %3s %3s %3s %3s %19s %19s %19s %3s %3s%s\n",
               ESC_BOLD,"SAT","S","IOD","IOC","FRQ","A/A","SVH","Toe","Toc",
               "Ttr/Tof","L2C","L2P",ESC_RESET);
-    for (i=0;i<MAXSAT;i++) {
+    for (int i=0;i<MAXSAT;i++) {
         int sys = satsys(i + 1, NULL);
         if ((sys & (SYS_GPS | SYS_GAL | SYS_QZS | SYS_CMP) & prcopt.navsys) == 0 ||
             eph[i].sat!=i+1) continue;
         // Mask QZS LEX health.
-        valid=eph[i].toe.time!=0&&fabs(timediff(time,eph[i].toe))<=MAXDTOE &&
+        int valid=eph[i].toe.time!=0&&fabs(timediff(time,eph[i].toe))<=MAXDTOE &&
             (sys == SYS_QZS ? (eph[i].svh & 0xfe) == 0 : eph[i].svh == 0);
         satno2id(i+1,id);
         if (eph[i].toe.time!=0) time2str(eph[i].toe,s1,0); else strcpy(s1,"-");
@@ -971,10 +985,10 @@ static void prnavidata(vt_t *vt)
                 id,valid?"OK":"-",eph[i].iode,eph[i].iodc,0,eph[i].sva,
                 eph[i].svh,s1,s2,s3,eph[i].code,eph[i].flag);
     }
-    for (i=0;i<MAXSAT;i++) {
+    for (int i=0;i<MAXSAT;i++) {
         int prn, sys = satsys(i + 1, &prn);
         if ((sys & SYS_GLO & prcopt.navsys) == 0 || geph[prn - 1].sat != i + 1) continue;
-        valid=geph[prn-1].toe.time!=0&&fabs(timediff(time,geph[prn-1].toe))<=MAXDTOE_GLO &&
+        int valid=geph[prn-1].toe.time!=0&&fabs(timediff(time,geph[prn-1].toe))<=MAXDTOE_GLO &&
             (geph[prn-1].svh & 9) == 0 && (geph[prn-1].svh & 6) != 4;
         satno2id(i+1,id);
         if (geph[prn-1].toe.time!=0) time2str(geph[prn-1].toe,s1,0); else strcpy(s1,"-");
@@ -1042,7 +1056,7 @@ static void prstream(vt_t *vt)
     }
 }
 /* print ssr correction ------------------------------------------------------*/
-static void prssr(vt_t *vt, int cbias, int pbias)
+static void prssr(vt_t *vt, int ri, int cbias, int pbias)
 {
     static char buff[128*MAXSAT];
     gtime_t time;
@@ -1053,7 +1067,10 @@ static void prssr(vt_t *vt, int cbias, int pbias)
     rtksvrlock(&svr);
     time=svr.rtk.sol.time;
     for (i=0;i<MAXSAT;i++) {
-        ssr[i]=svr.nav.ssr[i];
+      if (ri <= 0 || ri > 3)
+        ssr[i] = svr.nav.ssr[i];
+      else
+        ssr[i] = svr.rtcm[ri - 1].ssr[i];
     }
     rtksvrunlock(&svr);
     
@@ -1192,15 +1209,22 @@ static void cmd_observ(char **args, int narg, vt_t *vt)
 /* navidata command ----------------------------------------------------------*/
 static void cmd_navidata(char **args, int narg, vt_t *vt)
 {
-    int cycle=0;
+    int cycle = 0, prev = 0, set = 0;
     
     trace(3,"cmd_navidata:\n");
     
-    if (narg>1) cycle=(int)(atof(args[1])*1000.0);
+    for (int i = 1; i < narg; i++) {
+      if (strcmp(args[i], "-p") == 0) {
+        prev = 1;
+        continue;
+      }
+      if (sscanf(args[i], "-%d", &set) == 1) continue;
+      cycle = (int)(atof(args[i]) * 1000.0);
+    }
     
     while (!vt_chkbrk(vt)) {
         if (cycle>0) vt_printf(vt,ESC_CLEAR);
-        prnavidata(vt);
+        prnavidata(vt, prev, set);
         if (cycle>0) sleepms(cycle); else return;
     }
     vt_printf(vt,"\n");
@@ -1242,8 +1266,9 @@ static void cmd_ssr(char **args, int narg, vt_t *vt)
     trace(3,"cmd_ssr:\n");
     
     int cycle = 0;
-    int cbias = 0, pbias = 0;
+    int ri = 0, cbias = 0, pbias = 0;
     for (int i = 1; i < narg; i++) {
+      if (sscanf(args[i], "-%d", &ri) == 1) continue;
       if (strcmp(args[i], "-c") == 0) {
         cbias = 1;
         continue;
@@ -1257,7 +1282,7 @@ static void cmd_ssr(char **args, int narg, vt_t *vt)
 
     while (!vt_chkbrk(vt)) {
         if (cycle>0) vt_printf(vt,ESC_CLEAR);
-        prssr(vt, cbias, pbias);
+        prssr(vt, ri, cbias, pbias);
         if (cycle>0) sleepms(cycle); else return;
     }
     vt_printf(vt,"\n");
@@ -1693,7 +1718,7 @@ static void accept_sock(int ssock, con_t **con)
          inet_ntoa(addr.sin_addr));
 }
 
-static void deamonise(void)
+static void daemonise(void)
 {
 #ifndef WIN32
     /* In case we were not started in the background, fork and let the parent
@@ -1741,7 +1766,7 @@ static void deamonise(void)
 *     set, load or save command on the console. To shutdown the program, use
 *     shutdown command on the console or send USR2 signal to the process.
 *
-*     The --deamon option implies no console. When used with -s or -nc the RTK
+*     The --daemon option implies no console. When used with -s or -nc the RTK
 *     server is started on program startup. A telnet console can be used with
 *     this option to start and control the RTK server.
 *
@@ -1756,7 +1781,7 @@ static void deamonise(void)
 *     -r level   output solution status file (0:off,1:states,2:residuals)
 *     -t level   debug trace level (0:off,1-5:on)
 *     -sta sta   station name for receiver dcb
-*     --deamon   detach from the console
+*     --daemon   detach from the console
 *     --version  prints the version and exits
 *
 * command
@@ -1787,16 +1812,18 @@ static void deamonise(void)
 *       Show observation data. Use option cycle for cyclic display. Option -n
 *       specify number of frequencies.
 *
-*     navidata [cycle]
-*       Show navigation data. Use option cycle for cyclic display.
+*     navidata [-p] [-n] [cycle]
+*       Show navigation data. Option -p shows the previous set. Option -n
+*       specifies the set, 0 to 1. Use option cycle for cyclic display.
 *
 *     stream [cycle]
 *       Show stream status. Use option cycle for cyclic display.
 *
-*     ssr [-c] [-p] [cycle]
-*       Show the RTCM SSR state, with option -c to include code biases and
-*       with option -p to include phase biases. Use option cycle for cyclic
-*       display.
+*     ssr [-[1,2,3]] [-c] [-p] [cycle]
+*       Show the RTCM SSR state. Option -1 -2 or -3 selects the respective
+*       input, output, or correction RTCM stream index otherwise the combined
+*       ssr state is used. Option -c includes code biases and option -p
+*       includes phase biases. Use option cycle for cyclic display.
 *
 *     error
 *       Show error/warning messages. To stop messages, send break (ctr-C).
@@ -1852,9 +1879,9 @@ static void deamonise(void)
 int main(int argc, char **argv)
 {
     con_t *con[MAXCON]={0};
-    int i,port=0,outstat=0,trace=0,sock=0;
+    int i,port=0,outstat=0,outstatp=0,trace=0,sock=0;
     char *dev="",file[MAXSTR]="";
-    int deamon=0;
+    int daemon=0;
     
     for (i=1;i<argc;i++) {
         if      (!strcmp(argv[i],"-s")) start|=1; /* console */
@@ -1864,17 +1891,21 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i],"-d")&&i+1<argc) dev=argv[++i];
         else if (!strcmp(argv[i],"-o")&&i+1<argc) strcpy(file,argv[++i]);
         else if (!strcmp(argv[i],"-w")&&i+1<argc) strcpy(passwd,argv[++i]);
-        else if (!strcmp(argv[i],"-r")&&i+1<argc) outstat=atoi(argv[++i]);
+        else if (!strcmp(argv[i],"-r")&&i+1<argc) {
+          outstat = atoi(argv[++i]);
+          outstatp = 1;
+        }
         else if (!strcmp(argv[i],"-t")&&i+1<argc) trace=atoi(argv[++i]);
         else if (!strcmp(argv[i],"-sta")&&i+1<argc) strcpy(sta_name,argv[++i]);
-        else if (!strcmp(argv[i], "--deamon")) deamon=1;
+        else if (!strcmp(argv[i], "--daemon")) daemon=1;
+        else if (!strcmp(argv[i], "--deamon")) daemon=1;
         else if (!strcmp(argv[i], "--version")) {
             fprintf(stderr, "rtkrcv RTKLIB %s %s\n", VER_RTKLIB, PATCH_LEVEL);
             exit(0);
         }
         else printusage();
     }
-    if (deamon) deamonise();
+    if (daemon) daemonise();
     if (trace>0) {
         traceopen(TRACEFILE);
         tracelevel(trace);
@@ -1898,8 +1929,9 @@ int main(int argc, char **argv)
     if (!readnav(NAVIFILE,&svr.nav)) {
         fprintf(stderr,"no navigation data: %s\n",NAVIFILE);
     }
-    if (outstat>0) {
-        rtkopenstat(STATFILE,outstat);
+    if (!outstatp) outstat = solopt->sstat;
+    if (outstat > 0) {
+        rtkopenstat(filopt.solstat[0] != '\0' ? filopt.solstat : STATFILE, outstat);
     }
     /* open monitor port */
     if (moniport>0&&!openmoni(moniport)) {
@@ -1917,7 +1949,7 @@ int main(int argc, char **argv)
     }
     if (start&2) { /* Start without console */
         startsvr(NULL); 
-    } else if (!deamon) {
+    } else if (!daemon) {
         /* open device for local console */
         if (!(con[0]=con_open(0,dev))) {
             fprintf(stderr,"console open error dev=%s\n",dev);
