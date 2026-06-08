@@ -449,11 +449,10 @@ static int svid2sat(int svid)
     if (svid <=  68) return satno(SYS_GLO, svid-38);
     if (svid <=  70) return 0;
     if (svid <= 106) return satno(SYS_GAL, svid-70);
-    if (svid <= 119) return 0;
+    if (svid <= 119) return 0; // L-Band (MMS) Satellite
     if (svid <= 140) return satno(SYS_SBS, svid);
     if (svid <= 180) return satno(SYS_CMP, svid-140);
-    if (svid <= 187) return satno(SYS_QZS, svid-180+192);
-    if (svid <= 190) return 0; /* L-Band (MMS) Satellite */
+    if (svid <= 190) return satno(SYS_QZS, svid-180+192);
     if (svid <= 197) return satno(SYS_IRN, svid-190);
     if (svid <= 215) return satno(SYS_SBS, svid-57);
     if (svid <= 222) return satno(SYS_IRN, svid-208);
@@ -507,14 +506,14 @@ static uint8_t sig_tbl[SBF_MAXSIG+1][2] = { /* system, obs-code */
 
 static const int Meas3SigIdx2SignalType_Default[7][16] =
     {
-        /* Idx:        0         1          2          3           4         5           6          7                 8          9         10         11         12         13         14         15       */
-        /* GPS */ {CODE_L1C, CODE_L2L,   CODE_L5Q,  CODE_L1W,  CODE_L2W,  CODE_L1L, CODE_NONE, CODE_NONE,        CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE},
-        /* GLO */ {CODE_L1C, CODE_L2C,   CODE_L1P,  CODE_L2P,  CODE_L3Q, CODE_NONE, CODE_NONE, CODE_NONE,        CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE},
-        /* GAL */ {CODE_L1C, CODE_L5Q,   CODE_L7Q,  CODE_L6C,  CODE_L8Q, CODE_NONE, CODE_NONE, CODE_NONE,        CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE},
-        /* BDS */ {CODE_L2I, CODE_L7I,   CODE_L6I,  CODE_L1P,  CODE_L5P,  CODE_L7D, CODE_NONE, CODE_NONE,        CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE},
-        /* SBA */ {CODE_L1C, CODE_L5I,  CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE,        CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE},
-        /* QZS */ {CODE_L1C, CODE_L2L,   CODE_L5Q,  CODE_L6L,  CODE_L1L,  CODE_L1Z,  CODE_L5P, CODE_NONE/*L1CB*/,CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE},
-        /* IRN */ {CODE_L5A, CODE_L1E,   CODE_L9A, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE,        CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE}
+        /* Idx:        0         1          2          3           4         5           6          7          8          9         10         11         12         13         14         15       */
+        /* GPS */ {CODE_L1C, CODE_L2L,   CODE_L5Q,  CODE_L1W,  CODE_L2W,  CODE_L1L, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE},
+        /* GLO */ {CODE_L1C, CODE_L2C,   CODE_L1P,  CODE_L2P,  CODE_L3Q, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE},
+        /* GAL */ {CODE_L1C, CODE_L5Q,   CODE_L7Q,  CODE_L6C,  CODE_L8Q, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE},
+        /* BDS */ {CODE_L2I, CODE_L7I,   CODE_L6I,  CODE_L1P,  CODE_L5P,  CODE_L7D, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE},
+        /* SBA */ {CODE_L1C, CODE_L5I,  CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE},
+        /* QZS */ {CODE_L1C, CODE_L2L,   CODE_L5Q,  CODE_L6L,  CODE_L1L,  CODE_L1Z,  CODE_L5P,  CODE_L1E, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE},
+        /* IRN */ {CODE_L5A, CODE_L1E,   CODE_L9A, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE, CODE_NONE}
 };
 
 static int sigPriority(int sys, int idx, const char *opt, uint8_t *code)
