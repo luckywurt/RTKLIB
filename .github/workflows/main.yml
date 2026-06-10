@@ -1,0 +1,42 @@
+name: Sync Directory
+
+on:
+push:
+branches:
+- main
+- feat-xx
+
+permissions:
+contents: write
+
+jobs:
+sync:
+if: github.ref_name == vars.SOURCE_BRANCH
+
+```
+runs-on: ubuntu-latest
+
+steps:
+  - uses: actions/checkout@v4
+
+  - run: |
+      mkdir export
+      rsync -a ${{ vars.SOURCE_DIR }}/ export/
+
+  - run: |
+      git config user.name github-actions
+      git config user.email github-actions@github.com
+
+      cd export
+
+      git init
+      git checkout -b temp
+
+      git add .
+      git commit -m "sync"
+
+      git remote add origin \
+        https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+
+      git push -f origin HEAD:${{ vars.TARGET_BRANCH }}
+```
