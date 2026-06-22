@@ -49,13 +49,13 @@
 *-----------------------------------------------------------------------------*/
 #include <stdarg.h>
 #include "rtklib.h"
-#include "rtkalg.c"
 
 /* algorithm configuration -------------------------------------------------- */
 #define STD_PREC_VAR_THRESH 0  /* pos variance threshold to skip standard precision */
                               /* solution: 0   = run every epoch, */
                               /*           0.5 = skip except for first*/
 #define SEL_METHOD_GEO 1    /* reference satellite selection method (0:elmax,1:geometry) */
+#define USE_PAR 0           /* ambiguity resolution method (0:LAMBDA,1:PAR) */
 
 /* constants/macros ----------------------------------------------------------*/
 
@@ -1953,6 +1953,10 @@ static int manage_amb_LAMBDA(rtk_t *rtk, double *bias, double *xa, const int *sa
     return nb;
 }
 
+#define RTKPOS_INCLUDE_RTKALG
+#include "rtkalg.c"
+#undef RTKPOS_INCLUDE_RTKALG
+
 /* validation of solution ----------------------------------------------------*/
 static int valpos(rtk_t *rtk, const double *v, const double *R, const int *vflg,
                   int nv, double thres)
@@ -2169,8 +2173,16 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
     }
     /* resolve integer ambiguity by LAMBDA */
     if (stat==SOLQ_FLOAT) {
+        int nb_ar;
+
+        if (USE_PAR) {
+            nb_ar=manage_amb_PAR(rtk,obs,sat,iu,ir,ns,nf,refsat,y,bias,xa);
+        }
+        else {
+            nb_ar=manage_amb_LAMBDA(rtk,bias,xa,sat,nf,ns);
+        }
         /* if valid fixed solution, process it */
-        if (manage_amb_LAMBDA(rtk,bias,xa,sat,nf,ns)>1) {
+        if (nb_ar>1) {
 
             /* find zero-diff residuals for fixed solution */
             if (zdres(0,obs,nu,rs,dts,var,svh,nav,xa,opt,y,e,azel,freq)) {
@@ -2307,6 +2319,14 @@ extern void rtkinit(rtk_t *rtk, const prcopt_t *opt)
         rtk->refsat_rej[i][j]=0;
     }
     rtk->intpres_nb=0;
+    rtk->par_sd_time.time=0;
+    rtk->par_sd_time.sec=0.0;
+    rtk->par_sd_n=0;
+    for (i=0;i<MAXSAT;i++) for (int j=0;j<NFREQ;j++) {
+        rtk->par_sd[i][j]=0.0;
+        rtk->par_sd_valid[i][j]=0;
+        rtk->par_excl_prev[i][j]=0;
+    }
 }
 /* free rtk control ------------------------------------------------------------
 * free memory for rtk control struct

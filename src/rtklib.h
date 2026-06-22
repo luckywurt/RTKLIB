@@ -1247,6 +1247,11 @@ typedef struct {        /* RTK control/result type */
     int intpres_nb;     /* Time interpolation of residuals, number of previous base observations */
     int vtec_used;      /* indicates VTEC coeffs have been used to init ion states */
     obsd_t intpres_obsb[MAXOBS]; /* Time interpolation of residuals, previous base observations */
+    gtime_t par_sd_time; /* PAR single-difference cache time */
+    int par_sd_n;       /* number of valid PAR single-difference cache entries */
+    double par_sd[MAXSAT][NFREQ]; /* PAR phase single differences (m) */
+    uint8_t par_sd_valid[MAXSAT][NFREQ]; /* PAR phase single-difference valid flag */
+    uint8_t par_excl_prev[MAXSAT][NFREQ]; /* previous PAR final exclusion record */
 } rtk_t;
 
 typedef struct {        /* receiver raw data control type */
