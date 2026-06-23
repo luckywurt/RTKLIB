@@ -55,7 +55,7 @@
                               /* solution: 0   = run every epoch, */
                               /*           0.5 = skip except for first*/
 #define SEL_METHOD_GEO 1    /* reference satellite selection method (0:elmax,1:geometry) */
-#define USE_PAR 0           /* ambiguity resolution method (0:LAMBDA,1:PAR) */
+#define USE_PAR 1           /* ambiguity resolution method (0:LAMBDA,1:PAR) */
 
 /* constants/macros ----------------------------------------------------------*/
 
@@ -2322,6 +2322,7 @@ extern void rtkinit(rtk_t *rtk, const prcopt_t *opt)
     rtk->par_sd_time.time=0;
     rtk->par_sd_time.sec=0.0;
     rtk->par_sd_n=0;
+    rtk->par_ratio_base=0.0;
     for (i=0;i<MAXSAT;i++) for (int j=0;j<NFREQ;j++) {
         rtk->par_sd[i][j]=0.0;
         rtk->par_sd_valid[i][j]=0;

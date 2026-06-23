@@ -298,10 +298,22 @@ static void select_sat_geom(rtk_t *rtk, const obsd_t *obs, double dt,
 
 #define PAR_TDCP_MAX_AGE   5.0   /* max age of previous SD cache (s) */
 #define PAR_RATIO_IMPROVE  1.10  /* required relative ratio/thres improvement */
+#define PAR_RATIO_BASE_DEFAULT 1.2 /* fallback previous-epoch PAR raw ratio */
+#define PAR_LOCK_RATIO_FACTOR 1.5 /* ratio factor to delay a bad sat/freq */
 #define PAR_MIN_TOTAL_DD   12    /* min total DD count before PAR attempts */
 #define PAR_MIN_SYS_DD     3     /* min DD count per system after exclusion */
 #define PAR_MAX_DROP_FRAC  0.50  /* max excluded DD fraction */
 #define PAR_FINAL_DROP_RATE 0.20 /* final carry-forward exclusions per system */
+
+typedef struct {        /* PAR double-difference metadata */
+    int refsat;
+    int sat;
+    int freq;
+    int sys;
+    int m;
+    int ib_ref;
+    int ib_sat;
+} par_dd_t;
 
 typedef struct {        /* PAR sat/frequency exclusion candidate */
     int sat;
@@ -325,28 +337,66 @@ typedef struct {        /* PAR trial state snapshot */
     int nb_ar;
 } par_snapshot_t;
 
-static int par_sys_index(int sys)
-{
-    switch (sys) {
-        case SYS_GPS: return 0;
-        case SYS_GLO: return 1;
-        case SYS_GAL: return 2;
-        case SYS_CMP: return 3;
-        case SYS_QZS: return 4;
-        case SYS_IRN: return 5;
-    }
-    return -1;
-}
-
 static double par_ratio_norm(double ratio, double thres)
 {
     return thres>0.0?ratio/thres:ratio;
 }
 
-static int par_ratio_improved(double norm0, double norm1)
+static int par_ratio_valid(double ratio)
 {
-    if (norm1<=norm0) return 0;
-    return norm0<=0.0||norm1/norm0>=PAR_RATIO_IMPROVE;
+    return ratio==ratio&&ratio>1.0&&fabs(ratio)<1E99;
+}
+
+static int par_ratio_improved(double base_ratio, double trial_ratio)
+{
+    if (trial_ratio<=base_ratio) return 0;
+    return base_ratio<=0.0||trial_ratio/base_ratio>=PAR_RATIO_IMPROVE;
+}
+
+static double par_base_ratio(const rtk_t *rtk)
+{
+    return par_ratio_valid(rtk->par_ratio_base)?
+           rtk->par_ratio_base:PAR_RATIO_BASE_DEFAULT;
+}
+
+static void par_add_ratio_sample(double *samples, int *n, int nmax,
+                                 double ratio)
+{
+    if (*n>=nmax||!par_ratio_valid(ratio)) return;
+    samples[(*n)++]=ratio;
+}
+
+static void par_sort_ratios(double *v, int n)
+{
+    int i,j;
+
+    for (i=0;i<n-1;i++) for (j=i+1;j<n;j++) {
+        if (v[j]<v[i]) {
+            double tmp=v[i]; v[i]=v[j]; v[j]=tmp;
+        }
+    }
+}
+
+static double par_calc_epoch_base_ratio(const double *samples, int n)
+{
+    double v[MAXSAT*NFREQ+1],sum=0.0,base,mean;
+    int i,m=0,mid;
+
+    for (i=0;i<n;i++) {
+        if (!par_ratio_valid(samples[i])) continue;
+        v[m++]=samples[i];
+        sum+=samples[i];
+    }
+    if (m<=0) return PAR_RATIO_BASE_DEFAULT;
+    par_sort_ratios(v,m);
+    mean=sum/m;
+
+    if (m>=3) {
+        mid=m/2;
+        base=(v[mid-1]+v[mid]+v[mid+1])/3.0;
+        if (par_ratio_valid(base)) return base;
+    }
+    return par_ratio_valid(mean)?mean:PAR_RATIO_BASE_DEFAULT;
 }
 
 static void par_clear_excl(uint8_t excl[MAXSAT][NFREQ])
@@ -398,19 +448,10 @@ static void par_restore_snapshot(rtk_t *rtk, const par_snapshot_t *snap)
     rtk->nb_ar=snap->nb_ar;
 }
 
-static int par_is_current_refsat(const int refsat[6][NFREQ*2], int sat, int f)
-{
-    int m;
-
-    for (m=0;m<6;m++) {
-        if (refsat[m][f]==sat) return 1;
-    }
-    return 0;
-}
-
 /* index for PAR single to double-difference transformation matrix (D') ------*/
 static int ddidx_PAR(rtk_t *rtk, int *ix, int gps, int glo, int sbs,
-                     const uint8_t par_excl[MAXSAT][NFREQ])
+                     const uint8_t par_excl[MAXSAT][NFREQ],
+                     par_dd_t *dd, int maxdd)
 {
     int i,j,k,m,f,n,nb=0,na=rtk->na,nf=NF(&rtk->opt),nofix;
     double fix[MAXSAT],ref[MAXSAT];
@@ -464,6 +505,15 @@ static int ddidx_PAR(rtk_t *rtk, int *ix, int gps, int glo, int sbs,
                     rtk->ssat[sat_j-1].azel[1]>=rtk->opt.elmaskar&&!nofix) {
                     ix[nb*2  ]=i;
                     ix[nb*2+1]=j;
+                    if (dd&&nb<maxdd) {
+                        dd[nb].refsat=i-k+1;
+                        dd[nb].sat=sat_j;
+                        dd[nb].freq=f;
+                        dd[nb].sys=rtk->ssat[sat_j-1].sys;
+                        dd[nb].m=m;
+                        dd[nb].ib_ref=i;
+                        dd[nb].ib_sat=j;
+                    }
                     ref[nb]=i-k+1;
                     fix[nb++]=sat_j;
                     rtk->ssat[sat_j-1].fix[f]=2;
@@ -484,7 +534,7 @@ static int ddidx_PAR(rtk_t *rtk, int *ix, int gps, int glo, int sbs,
 /* resolve integer ambiguity for PAR ----------------------------------------*/
 static int resamb_PAR(rtk_t *rtk, double *bias, double *xa, int gps, int glo,
                       int sbs, const uint8_t par_excl[MAXSAT][NFREQ],
-                      int commit)
+                      int commit, par_dd_t *dd, int maxdd)
 {
     prcopt_t *opt=&rtk->opt;
     int i,j,nb,nb1,info,nx=rtk->nx,na=rtk->na;
@@ -496,7 +546,7 @@ static int resamb_PAR(rtk_t *rtk, double *bias, double *xa, int gps, int glo,
     rtk->sol.ratio=0.0;
     rtk->nb_ar=0;
     ix=imat(nx,2);
-    if ((nb=ddidx_PAR(rtk,ix,gps,glo,sbs,par_excl))<(rtk->opt.minfixsats-1)) {
+    if ((nb=ddidx_PAR(rtk,ix,gps,glo,sbs,par_excl,dd,maxdd))<(rtk->opt.minfixsats-1)) {
         if (commit) errmsg(rtk,"not enough valid PAR double-differences\n");
         free(ix);
         return -1;
@@ -587,8 +637,7 @@ static int resamb_PAR(rtk_t *rtk, double *bias, double *xa, int gps, int glo,
 
 static int par_build_sd(rtk_t *rtk, const obsd_t *obs, const int *sat,
                         const int *iu, const int *ir, int ns, int nf,
-                        const int refsat[6][NFREQ*2], const double *y,
-                        double sd[MAXSAT][NFREQ],
+                        const double *y, double sd[MAXSAT][NFREQ],
                         uint8_t valid[MAXSAT][NFREQ])
 {
     int i,f,n=0;
@@ -598,10 +647,9 @@ static int par_build_sd(rtk_t *rtk, const obsd_t *obs, const int *sat,
         valid[i][f]=0;
     }
     for (i=0;i<ns;i++) for (f=0;f<nf&&f<NFREQ;f++) {
-        int s=sat[i],used;
+        int s=sat[i];
 
-        used=rtk->ssat[s-1].fix[f]==2||par_is_current_refsat(refsat,s,f);
-        if (!used||!rtk->ssat[s-1].vsat[f]) continue;
+        if (rtk->ssat[s-1].fix[f]!=2||!rtk->ssat[s-1].vsat[f]) continue;
         if (y[f+iu[i]*nf*2]==0.0||y[f+ir[i]*nf*2]==0.0) continue;
         if (rtk->ssat[s-1].slip[f]&(LLI_SLIP|LLI_HALFC)) continue;
         if ((obs[iu[i]].LLI[f]|obs[ir[i]].LLI[f])&(LLI_SLIP|LLI_HALFC)) continue;
@@ -629,24 +677,21 @@ static void par_store_sd_cache(rtk_t *rtk, gtime_t time,
     rtk->par_sd_n=n;
 }
 
-static int par_collect_candidates(rtk_t *rtk, const int *sat, int ns, int nf,
-                                  const int refsat[6][NFREQ*2],
+static int par_collect_candidates(rtk_t *rtk, const par_dd_t *dd, int ndd,
                                   const double sd[MAXSAT][NFREQ],
                                   const uint8_t valid[MAXSAT][NFREQ],
                                   par_cand_t *cand, int *sys_count)
 {
-    int i,f,n=0,m;
+    int i,n=0,m;
 
     for (m=0;m<6;m++) sys_count[m]=0;
-    for (i=0;i<ns;i++) for (f=0;f<nf&&f<NFREQ;f++) {
-        int s=sat[i],sys=rtk->ssat[s-1].sys,ref;
+    for (i=0;i<ndd;i++) {
+        int s=dd[i].sat,f=dd[i].freq,sys=dd[i].sys,ref=dd[i].refsat;
         par_cand_t *c;
 
-        if (rtk->ssat[s-1].fix[f]!=2) continue;
         if (sys==SYS_SBS) continue; /* TODO: SBAS PAR support is intentionally omitted. */
-        if ((m=par_sys_index(sys))<0) continue;
-        ref=refsat[m][f];
         if (ref<=0||ref==s||!valid[s-1][f]||!valid[ref-1][f]) continue;
+        m=dd[i].m;
 
         c=cand+n++;
         c->sat=s;
@@ -719,6 +764,36 @@ static void par_select_final_excl(const par_cand_t *cand, int n,
     }
 }
 
+static int par_count_flags(const uint8_t flags[MAXSAT][NFREQ])
+{
+    int i,f,n=0;
+
+    for (i=0;i<MAXSAT;i++) for (f=0;f<NFREQ;f++) {
+        if (flags[i][f]) n++;
+    }
+    return n;
+}
+
+static int par_apply_lock_reset(rtk_t *rtk,
+                                const uint8_t reset[MAXSAT][NFREQ],
+                                int min_nb)
+{
+    int i,f,n=0,lock_delay;
+
+    if (min_nb<=0) return 0;
+    lock_delay=-(int)ceil(min_nb*0.5);
+    if (lock_delay>=0) lock_delay=-1;
+
+    for (i=0;i<MAXSAT;i++) for (f=0;f<NFREQ;f++) {
+        if (!reset[i][f]) continue;
+        rtk->ssat[i].lock[f]=MIN(rtk->ssat[i].lock[f],lock_delay);
+        n++;
+        trace(3,"PAR lock reset sat=%d f=%d lock=%d\n",i+1,f+1,
+              rtk->ssat[i].lock[f]);
+    }
+    return n;
+}
+
 /* resolve integer ambiguity by PAR -----------------------------------------*/
 static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
                           const int *iu, const int *ir, int ns, int nf,
@@ -726,19 +801,27 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
                           double *bias, double *xa)
 {
     uint8_t par_excl[MAXSAT][NFREQ]={{0}},final_excl[MAXSAT][NFREQ]={{0}};
-    uint8_t sd_valid[MAXSAT][NFREQ];
-    double sd[MAXSAT][NFREQ],ratio0,thres0,norm0;
+    uint8_t lock_reset[MAXSAT][NFREQ]={{0}},sd_valid[MAXSAT][NFREQ];
+    double sd[MAXSAT][NFREQ],base_ratio,full_ratio,full_thres;
+    double best_ratio,best_thres,new_base,ratio_samples[MAXSAT*NFREQ+1];
     par_cand_t cand[MAXSAT*NFREQ];
+    par_dd_t full_dd[MAXSAT*NFREQ];
     int sys_count[6],sys_left[6],i,nb,full_nb,ncand,sd_n,prev_ok;
     int gps1=1,glo1,sbas1=0,drops=0,max_drop,total_left;
+    int ratio_sample_n=0,min_trial_nb=0,lock_count=0;
     float posvar=0.0f;
+
+    (void)refsat;
 
     for (i=0;i<3;i++) posvar+=(float)rtk->P[i+i*rtk->nx];
     posvar/=3.0f;
+    base_ratio=par_base_ratio(rtk);
 
     trace(3,"manage_amb_PAR: posvar=%.6f\n",posvar);
     trace(3,"manage_amb_PAR: prevRatios= %.3f %.3f\n",
           rtk->sol.prev_ratio1,rtk->sol.prev_ratio2);
+    trace(3,"manage_amb_PAR: base_ratio=%.3f cached=%.3f\n",
+          base_ratio,rtk->par_ratio_base);
 
     if (rtk->opt.mode<=PMODE_DGPS||rtk->opt.modear==ARMODE_OFF||
         rtk->opt.thresar[0]<1.0||posvar>rtk->opt.thresar[1]) {
@@ -752,41 +835,73 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
     /* TODO: verify GLONASS fix-hold/autocal edge cases before special handling. */
     glo1=(rtk->opt.navsys&SYS_GLO)?(((rtk->opt.glomodear==GLO_ARMODE_FIXHOLD)&&!rtk->holdamb)?0:1):0;
 
-    nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,par_excl,1);
+    nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,par_excl,1,
+                  full_dd,MAXSAT*NFREQ);
     full_nb=rtk->nb_ar;
-    ratio0=rtk->sol.ratio;
-    thres0=rtk->sol.thres;
-    norm0=par_ratio_norm(ratio0,thres0);
+    full_ratio=rtk->sol.ratio;
+    full_thres=rtk->sol.thres;
+    best_ratio=full_ratio;
+    best_thres=full_thres;
+    par_add_ratio_sample(ratio_samples,&ratio_sample_n,MAXSAT*NFREQ+1,
+                         full_ratio);
+    trace(3,"PAR full: nb=%d full_nb=%d ratio=%.3f thres=%.3f base=%.3f\n",
+          nb,full_nb,full_ratio,full_thres,base_ratio);
 
-    sd_n=par_build_sd(rtk,obs,sat,iu,ir,ns,nf,refsat,y,sd,sd_valid);
+    sd_n=par_build_sd(rtk,obs,sat,iu,ir,ns,nf,y,sd,sd_valid);
     if (nb>1) {
         par_store_sd_cache(rtk,obs[0].time,sd,sd_valid);
         par_clear_prev_excl(rtk);
-        rtk->sol.prev_ratio1=(float)ratio0;
+        rtk->par_ratio_base=par_ratio_valid(full_ratio)?
+                            full_ratio:PAR_RATIO_BASE_DEFAULT;
+        rtk->sol.ratio=(float)best_ratio;
+        rtk->sol.thres=(float)best_thres;
+        rtk->sol.prev_ratio1=(float)full_ratio;
         rtk->sol.prev_ratio2=rtk->sol.ratio;
+        trace(3,"PAR result: full-fixed best=%.3f thres=%.3f next_base=%.3f\n",
+              best_ratio,best_thres,rtk->par_ratio_base);
         return nb;
     }
 
     prev_ok=rtk->par_sd_n>0&&fabs(timediff(obs[0].time,rtk->par_sd_time))<=PAR_TDCP_MAX_AGE;
     if (!prev_ok||sd_n<=0||full_nb<=PAR_MIN_TOTAL_DD) {
+        new_base=par_calc_epoch_base_ratio(ratio_samples,ratio_sample_n);
+        rtk->par_ratio_base=new_base;
         par_store_sd_cache(rtk,obs[0].time,sd,sd_valid);
         par_clear_prev_excl(rtk);
-        rtk->sol.prev_ratio1=(float)ratio0;
+        rtk->sol.ratio=(float)best_ratio;
+        rtk->sol.thres=(float)best_thres;
+        rtk->sol.prev_ratio1=(float)full_ratio;
         rtk->sol.prev_ratio2=rtk->sol.ratio;
-        trace(3,"manage_amb_PAR: skip PAR prev_ok=%d sd_n=%d full_nb=%d\n",
-              prev_ok,sd_n,full_nb);
+        trace(3,"PAR result: skipped prev_ok=%d sd_n=%d full_nb=%d best=%.3f next_base=%.3f\n",
+              prev_ok,sd_n,full_nb,best_ratio,new_base);
         return 0;
     }
 
-    ncand=par_collect_candidates(rtk,sat,ns,nf,refsat,sd,sd_valid,cand,sys_count);
+    ncand=par_collect_candidates(rtk,full_dd,full_nb,sd,sd_valid,cand,sys_count);
     if (ncand<=0) {
+        new_base=par_calc_epoch_base_ratio(ratio_samples,ratio_sample_n);
+        rtk->par_ratio_base=new_base;
         par_store_sd_cache(rtk,obs[0].time,sd,sd_valid);
         par_clear_prev_excl(rtk);
-        rtk->sol.prev_ratio1=(float)ratio0;
+        rtk->sol.ratio=(float)best_ratio;
+        rtk->sol.thres=(float)best_thres;
+        rtk->sol.prev_ratio1=(float)full_ratio;
         rtk->sol.prev_ratio2=rtk->sol.ratio;
+        trace(3,"PAR result: no-candidate best=%.3f next_base=%.3f\n",
+              best_ratio,new_base);
         return 0;
     }
+    for (i=0;i<ncand;i++) {
+        trace(3,"PAR tdcp: sat=%d f=%d ref=%d has=%d tdcp=%.4f prior=%d\n",
+              cand[i].sat,cand[i].freq+1,cand[i].refsat,
+              cand[i].has_tdcp,cand[i].tdcp,cand[i].prior);
+    }
     par_sort_candidates(cand,ncand);
+    for (i=0;i<ncand;i++) {
+        trace(3,"PAR order %d: sat=%d f=%d ref=%d has=%d tdcp=%.4f prior=%d\n",
+              i+1,cand[i].sat,cand[i].freq+1,cand[i].refsat,
+              cand[i].has_tdcp,cand[i].tdcp,cand[i].prior);
+    }
 
     for (i=0;i<6;i++) sys_left[i]=sys_count[i];
     max_drop=(int)(full_nb*PAR_MAX_DROP_FRAC);
@@ -794,7 +909,7 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
 
     for (i=0;i<ncand;i++) {
         par_snapshot_t snap;
-        double norm1;
+        int lock_mark=0;
 
         if (par_excl[cand[i].sat-1][cand[i].freq]) continue;
         if (drops+1>max_drop) break;
@@ -804,28 +919,51 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
         par_save_snapshot(rtk,&snap);
         par_excl[cand[i].sat-1][cand[i].freq]=1;
 
-        nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,par_excl,0);
+        nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,par_excl,0,
+                      NULL,0);
+        if (nb>0&&(min_trial_nb<=0||nb<min_trial_nb)) min_trial_nb=nb;
         cand[i].ratio=rtk->sol.ratio;
         cand[i].thres=rtk->sol.thres;
         cand[i].norm=par_ratio_norm(cand[i].ratio,cand[i].thres);
-        cand[i].improve=cand[i].norm-norm0;
-        norm1=cand[i].norm;
+        cand[i].improve=cand[i].ratio-base_ratio;
+        par_add_ratio_sample(ratio_samples,&ratio_sample_n,MAXSAT*NFREQ+1,
+                             cand[i].ratio);
+        if (cand[i].ratio>best_ratio) {
+            best_ratio=cand[i].ratio;
+            best_thres=cand[i].thres;
+        }
+        if (par_ratio_valid(cand[i].ratio)&&
+            cand[i].ratio>=base_ratio*PAR_LOCK_RATIO_FACTOR) {
+            lock_mark=1;
+            lock_reset[cand[i].sat-1][cand[i].freq]=1;
+        }
 
-        trace(3,"PAR try sat=%d f=%d tdcp=%s%.4f ratio=%.2f thres=%.2f improve=%.3f\n",
-              cand[i].sat,cand[i].freq+1,cand[i].has_tdcp?"":"none ",
-              cand[i].tdcp,cand[i].ratio,cand[i].thres,cand[i].improve);
+        trace(3,"PAR try sat=%d f=%d ref=%d nb=%d tdcp=%s%.4f ratio=%.3f thres=%.3f base=%.3f improve=%.3f lock=%d\n",
+              cand[i].sat,cand[i].freq+1,cand[i].refsat,nb,
+              cand[i].has_tdcp?"":"none ",cand[i].tdcp,cand[i].ratio,
+              cand[i].thres,base_ratio,cand[i].improve,lock_mark);
 
-        if (nb>1&&norm1>=1.0) {
-            nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,par_excl,1);
+        if (nb>1&&cand[i].ratio>=cand[i].thres) {
+            lock_reset[cand[i].sat-1][cand[i].freq]=1;
+            nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,par_excl,1,
+                          NULL,0);
             if (nb>1) {
+                new_base=par_calc_epoch_base_ratio(ratio_samples,ratio_sample_n);
+                rtk->par_ratio_base=new_base;
                 par_store_prev_excl(rtk,par_excl);
                 par_store_sd_cache(rtk,obs[0].time,sd,sd_valid);
-                rtk->sol.prev_ratio1=(float)ratio0;
+                lock_count=par_apply_lock_reset(rtk,lock_reset,min_trial_nb);
+                rtk->sol.ratio=(float)best_ratio;
+                rtk->sol.thres=(float)best_thres;
+                rtk->sol.prev_ratio1=(float)full_ratio;
                 rtk->sol.prev_ratio2=rtk->sol.ratio;
+                trace(3,"PAR result: fixed best=%.3f thres=%.3f next_base=%.3f min_nb=%d drops=%d final_excl=%d lock_reset=%d\n",
+                      best_ratio,best_thres,new_base,min_trial_nb,drops+1,
+                      par_count_flags(par_excl),lock_count);
                 return nb;
             }
         }
-        if (par_ratio_improved(norm0,norm1)) {
+        if (par_ratio_improved(base_ratio,cand[i].ratio)) {
             drops++;
             total_left--;
             sys_left[cand[i].m]--;
@@ -836,10 +974,18 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
     }
 
     par_select_final_excl(cand,ncand,final_excl);
+    new_base=par_calc_epoch_base_ratio(ratio_samples,ratio_sample_n);
+    rtk->par_ratio_base=new_base;
     par_store_prev_excl(rtk,final_excl);
     par_store_sd_cache(rtk,obs[0].time,sd,sd_valid);
-    rtk->sol.prev_ratio1=(float)ratio0;
+    lock_count=par_apply_lock_reset(rtk,lock_reset,min_trial_nb);
+    rtk->sol.ratio=(float)best_ratio;
+    rtk->sol.thres=(float)best_thres;
+    rtk->sol.prev_ratio1=(float)full_ratio;
     rtk->sol.prev_ratio2=rtk->sol.ratio;
+    trace(3,"PAR result: float best=%.3f thres=%.3f next_base=%.3f min_nb=%d drops=%d final_excl=%d lock_reset=%d\n",
+          best_ratio,best_thres,new_base,min_trial_nb,drops,
+          par_count_flags(final_excl),lock_count);
     return 0;
 }
 

@@ -1252,6 +1252,7 @@ typedef struct {        /* RTK control/result type */
     double par_sd[MAXSAT][NFREQ]; /* PAR phase single differences (m) */
     uint8_t par_sd_valid[MAXSAT][NFREQ]; /* PAR phase single-difference valid flag */
     uint8_t par_excl_prev[MAXSAT][NFREQ]; /* previous PAR final exclusion record */
+    double par_ratio_base; /* previous PAR raw-ratio baseline */
 } rtk_t;
 
 typedef struct {        /* receiver raw data control type */
