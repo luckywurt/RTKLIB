@@ -304,6 +304,7 @@ static void select_sat_geom(rtk_t *rtk, const obsd_t *obs, double dt,
 #define PAR_MIN_SYS_DD     3     /* min DD count per system after exclusion */
 #define PAR_MAX_DROP_FRAC  0.50  /* max excluded DD fraction */
 #define PAR_FINAL_DROP_RATE 0.20 /* final carry-forward exclusions per system */
+#define PAR_EXCLUDE_WHOLE_SAT 1  /* 0:sat/freq PAR, 1:whole-satellite PAR */
 
 typedef struct {        /* PAR double-difference metadata */
     int refsat;
@@ -321,7 +322,10 @@ typedef struct {        /* PAR sat/frequency exclusion candidate */
     int sys;
     int m;
     int refsat;
+    unsigned int freq_mask;
+    int dd_count;
     int prior;
+    int lock0;
     int has_tdcp;
     double tdcp;
     double ratio;
@@ -448,8 +452,31 @@ static void par_restore_snapshot(rtk_t *rtk, const par_snapshot_t *snap)
     rtk->nb_ar=snap->nb_ar;
 }
 
+static int par_ar_active(const rtk_t *rtk, int sat, int f, int k, int m,
+                         int sbs)
+{
+    if (sat<1||sat>MAXSAT) return 0;
+    if (sbs==0&&satsys(sat,NULL)==SYS_SBS) return 0;
+    if (rtk->x[k+sat-1]==0.0||!test_sys(rtk->ssat[sat-1].sys,m)||
+        !rtk->ssat[sat-1].vsat[f]) {
+        return 0;
+    }
+    return 1;
+}
+
+static int par_ar_fixable(const rtk_t *rtk, int sat, int f, int k, int m,
+                          int sbs, int nofix,
+                          const uint8_t par_excl[MAXSAT][NFREQ])
+{
+    if (!par_ar_active(rtk,sat,f,k,m,sbs)||par_excl[sat-1][f]) return 0;
+    return rtk->ssat[sat-1].lock[f]>=0&&
+           !(rtk->ssat[sat-1].slip[f]&(LLI_SLIP|LLI_HALFC))&&
+           rtk->ssat[sat-1].azel[1]>=rtk->opt.elmaskar&&!nofix;
+}
+
 /* index for PAR single to double-difference transformation matrix (D') ------*/
 static int ddidx_PAR(rtk_t *rtk, int *ix, int gps, int glo, int sbs,
+                     const int refsat[6][NFREQ*2],
                      const uint8_t par_excl[MAXSAT][NFREQ],
                      par_dd_t *dd, int maxdd)
 {
@@ -466,25 +493,32 @@ static int ddidx_PAR(rtk_t *rtk, int *ix, int gps, int glo, int sbs,
         nofix=(m==0&&gps==0)||(m==1&&glo==0)||(m==3&&rtk->opt.bdsmodear==0);
 
         for (f=0,k=na;f<nf;f++,k+=MAXSAT) {
-            for (i=k;i<k+MAXSAT;i++) {
-                int sat_i=i-k+1;
+            int ref0=refsat?refsat[m][f]:0;
 
-                if (par_excl[sat_i-1][f]) {
-                    rtk->ssat[sat_i-1].fix[f]=1;
-                    continue;
+            i=k+MAXSAT;
+            if (par_ar_fixable(rtk,ref0,f,k,m,sbs,nofix,par_excl)) {
+                i=k+ref0-1;
+                rtk->ssat[ref0-1].fix[f]=2;
+            }
+            else if (ref0>=1&&ref0<=MAXSAT&&
+                     (par_excl[ref0-1][f]||par_ar_active(rtk,ref0,f,k,m,sbs))) {
+                rtk->ssat[ref0-1].fix[f]=1;
+            }
+            if (i>=k+MAXSAT) {
+                for (i=k;i<k+MAXSAT;i++) {
+                    int sat_i=i-k+1;
+
+                    if (par_excl[sat_i-1][f]) {
+                        rtk->ssat[sat_i-1].fix[f]=1;
+                        continue;
+                    }
+                    if (!par_ar_active(rtk,sat_i,f,k,m,sbs)) continue;
+                    if (par_ar_fixable(rtk,sat_i,f,k,m,sbs,nofix,par_excl)) {
+                        rtk->ssat[sat_i-1].fix[f]=2;
+                        break;
+                    }
+                    else rtk->ssat[sat_i-1].fix[f]=1;
                 }
-                if (sbs==0&&satsys(sat_i,NULL)==SYS_SBS) continue;
-                if (rtk->x[i]==0.0||!test_sys(rtk->ssat[sat_i-1].sys,m)||
-                    !rtk->ssat[sat_i-1].vsat[f]) {
-                    continue;
-                }
-                if (rtk->ssat[sat_i-1].lock[f]>=0&&
-                    !(rtk->ssat[sat_i-1].slip[f]&(LLI_SLIP|LLI_HALFC))&&
-                    rtk->ssat[sat_i-1].azel[1]>=rtk->opt.elmaskar&&!nofix) {
-                    rtk->ssat[sat_i-1].fix[f]=2;
-                    break;
-                }
-                else rtk->ssat[sat_i-1].fix[f]=1;
             }
             if (i>=k+MAXSAT||rtk->ssat[i-k].fix[f]!=2) continue;
 
@@ -495,14 +529,8 @@ static int ddidx_PAR(rtk_t *rtk, int *ix, int gps, int glo, int sbs,
                     rtk->ssat[sat_j-1].fix[f]=1;
                     continue;
                 }
-                if (i==j||rtk->x[j]==0.0||!test_sys(rtk->ssat[sat_j-1].sys,m)||
-                    !rtk->ssat[sat_j-1].vsat[f]) {
-                    continue;
-                }
-                if (sbs==0&&satsys(sat_j,NULL)==SYS_SBS) continue;
-                if (rtk->ssat[sat_j-1].lock[f]>=0&&
-                    !(rtk->ssat[sat_j-1].slip[f]&(LLI_SLIP|LLI_HALFC))&&
-                    rtk->ssat[sat_j-1].azel[1]>=rtk->opt.elmaskar&&!nofix) {
+                if (i==j||!par_ar_active(rtk,sat_j,f,k,m,sbs)) continue;
+                if (par_ar_fixable(rtk,sat_j,f,k,m,sbs,nofix,par_excl)) {
                     ix[nb*2  ]=i;
                     ix[nb*2+1]=j;
                     if (dd&&nb<maxdd) {
@@ -533,8 +561,9 @@ static int ddidx_PAR(rtk_t *rtk, int *ix, int gps, int glo, int sbs,
 
 /* resolve integer ambiguity for PAR ----------------------------------------*/
 static int resamb_PAR(rtk_t *rtk, double *bias, double *xa, int gps, int glo,
-                      int sbs, const uint8_t par_excl[MAXSAT][NFREQ],
-                      int commit, par_dd_t *dd, int maxdd)
+                      int sbs, const int refsat[6][NFREQ*2],
+                      const uint8_t par_excl[MAXSAT][NFREQ], int commit,
+                      par_dd_t *dd, int maxdd)
 {
     prcopt_t *opt=&rtk->opt;
     int i,j,nb,nb1,info,nx=rtk->nx,na=rtk->na;
@@ -546,7 +575,7 @@ static int resamb_PAR(rtk_t *rtk, double *bias, double *xa, int gps, int glo,
     rtk->sol.ratio=0.0;
     rtk->nb_ar=0;
     ix=imat(nx,2);
-    if ((nb=ddidx_PAR(rtk,ix,gps,glo,sbs,par_excl,dd,maxdd))<(rtk->opt.minfixsats-1)) {
+    if ((nb=ddidx_PAR(rtk,ix,gps,glo,sbs,refsat,par_excl,dd,maxdd))<(rtk->opt.minfixsats-1)) {
         if (commit) errmsg(rtk,"not enough valid PAR double-differences\n");
         free(ix);
         return -1;
@@ -677,6 +706,27 @@ static void par_store_sd_cache(rtk_t *rtk, gtime_t time,
     rtk->par_sd_n=n;
 }
 
+static int par_candidate_flagged(const uint8_t flags[MAXSAT][NFREQ],
+                                 const par_cand_t *cand)
+{
+    int f;
+
+    for (f=0;f<NFREQ;f++) {
+        if ((cand->freq_mask&(1u<<f))&&flags[cand->sat-1][f]) return 1;
+    }
+    return 0;
+}
+
+static void par_set_candidate_flag(uint8_t flags[MAXSAT][NFREQ],
+                                   const par_cand_t *cand, uint8_t value)
+{
+    int f;
+
+    for (f=0;f<NFREQ;f++) {
+        if (cand->freq_mask&(1u<<f)) flags[cand->sat-1][f]=value;
+    }
+}
+
 static int par_collect_candidates(rtk_t *rtk, const par_dd_t *dd, int ndd,
                                   const double sd[MAXSAT][NFREQ],
                                   const uint8_t valid[MAXSAT][NFREQ],
@@ -688,30 +738,55 @@ static int par_collect_candidates(rtk_t *rtk, const par_dd_t *dd, int ndd,
     for (i=0;i<ndd;i++) {
         int s=dd[i].sat,f=dd[i].freq,sys=dd[i].sys,ref=dd[i].refsat;
         par_cand_t *c;
+        double tdcp=0.0;
+        int prev_ok,p;
 
         if (sys==SYS_SBS) continue; /* TODO: SBAS PAR support is intentionally omitted. */
         if (ref<=0||ref==s||!valid[s-1][f]||!valid[ref-1][f]) continue;
         m=dd[i].m;
-
-        c=cand+n++;
-        c->sat=s;
-        c->freq=f;
-        c->sys=sys;
-        c->m=m;
-        c->refsat=ref;
-        c->prior=rtk->par_excl_prev[s-1][f]?1:0;
-        c->ratio=c->thres=c->norm=0.0;
-        c->improve=-1E99;
-        if (rtk->par_sd_valid[s-1][f]&&rtk->par_sd_valid[ref-1][f]) {
-            c->has_tdcp=1;
-            c->tdcp=(sd[s-1][f]-sd[ref-1][f])-
-                    (rtk->par_sd[s-1][f]-rtk->par_sd[ref-1][f]);
-        }
-        else {
-            c->has_tdcp=0;
-            c->tdcp=0.0;
-        }
         sys_count[m]++;
+
+        p=n;
+        if (PAR_EXCLUDE_WHOLE_SAT) {
+            for (p=0;p<n;p++) {
+                if (cand[p].sat==s&&cand[p].m==m) break;
+            }
+        }
+        if (p>=n) {
+            c=cand+n++;
+            c->sat=s;
+            c->freq=f;
+            c->sys=sys;
+            c->m=m;
+            c->refsat=ref;
+            c->freq_mask=0u;
+            c->dd_count=0;
+            c->prior=0;
+            c->lock0=0;
+            c->has_tdcp=1;
+            c->tdcp=0.0;
+            c->ratio=c->thres=c->norm=0.0;
+            c->improve=-1E99;
+        }
+        else c=cand+p;
+
+        c->freq_mask|=1u<<f;
+        c->dd_count++;
+        if (rtk->par_excl_prev[s-1][f]) c->prior=1;
+        if (rtk->ssat[s-1].lock[f]==0) c->lock0=1;
+
+        prev_ok=rtk->par_sd_valid[s-1][f]&&rtk->par_sd_valid[ref-1][f];
+        if (!prev_ok) {
+            c->has_tdcp=0;
+            continue;
+        }
+        tdcp=(sd[s-1][f]-sd[ref-1][f])-
+             (rtk->par_sd[s-1][f]-rtk->par_sd[ref-1][f]);
+        if (fabs(tdcp)>=fabs(c->tdcp)) {
+            c->tdcp=tdcp;
+            c->freq=f;
+            c->refsat=ref;
+        }
     }
     return n;
 }
@@ -725,6 +800,7 @@ static void par_sort_candidates(par_cand_t *cand, int n)
 
         if (cand[j].prior!=cand[i].prior) swap=cand[j].prior>cand[i].prior;
         else if (cand[j].has_tdcp!=cand[i].has_tdcp) swap=!cand[j].has_tdcp;
+        else if (cand[j].lock0!=cand[i].lock0) swap=cand[j].lock0>cand[i].lock0;
         else swap=fabs(cand[j].tdcp)>fabs(cand[i].tdcp);
 
         if (swap) {
@@ -741,7 +817,7 @@ static void par_select_final_excl(const par_cand_t *cand, int n,
     int i,m,limit[6]={0},used[6]={0},count[6]={0},selected[MAXSAT*NFREQ]={0};
 
     par_clear_excl(excl);
-    for (i=0;i<n;i++) count[cand[i].m]++;
+    for (i=0;i<n;i++) count[cand[i].m]+=cand[i].dd_count;
     for (m=0;m<6;m++) {
         if (count[m]>0) limit[m]=(int)(count[m]*PAR_FINAL_DROP_RATE+0.999999);
     }
@@ -751,16 +827,16 @@ static void par_select_final_excl(const par_cand_t *cand, int n,
 
         for (i=0;i<n;i++) {
             if (selected[i]||cand[i].improve<=0.0) continue;
-            if (used[cand[i].m]>=limit[cand[i].m]) continue;
+            if (used[cand[i].m]+cand[i].dd_count>limit[cand[i].m]) continue;
             if (best<0||cand[i].improve>best_improve) {
                 best=i;
                 best_improve=cand[i].improve;
             }
         }
         if (best<0) break;
-        excl[cand[best].sat-1][cand[best].freq]=1;
+        par_set_candidate_flag(excl,cand+best,1);
         selected[best]=1;
-        used[cand[best].m]++;
+        used[cand[best].m]+=cand[best].dd_count;
     }
 }
 
@@ -811,8 +887,6 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
     int ratio_sample_n=0,min_trial_nb=0,lock_count=0;
     float posvar=0.0f;
 
-    (void)refsat;
-
     for (i=0;i<3;i++) posvar+=(float)rtk->P[i+i*rtk->nx];
     posvar/=3.0f;
     base_ratio=par_base_ratio(rtk);
@@ -835,7 +909,7 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
     /* TODO: verify GLONASS fix-hold/autocal edge cases before special handling. */
     glo1=(rtk->opt.navsys&SYS_GLO)?(((rtk->opt.glomodear==GLO_ARMODE_FIXHOLD)&&!rtk->holdamb)?0:1):0;
 
-    nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,par_excl,1,
+    nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,refsat,par_excl,1,
                   full_dd,MAXSAT*NFREQ);
     full_nb=rtk->nb_ar;
     full_ratio=rtk->sol.ratio;
@@ -891,16 +965,12 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
               best_ratio,new_base);
         return 0;
     }
-    for (i=0;i<ncand;i++) {
-        trace(3,"PAR tdcp: sat=%d f=%d ref=%d has=%d tdcp=%.4f prior=%d\n",
-              cand[i].sat,cand[i].freq+1,cand[i].refsat,
-              cand[i].has_tdcp,cand[i].tdcp,cand[i].prior);
-    }
     par_sort_candidates(cand,ncand);
     for (i=0;i<ncand;i++) {
-        trace(3,"PAR order %d: sat=%d f=%d ref=%d has=%d tdcp=%.4f prior=%d\n",
-              i+1,cand[i].sat,cand[i].freq+1,cand[i].refsat,
-              cand[i].has_tdcp,cand[i].tdcp,cand[i].prior);
+        trace(3,"PAR order %d: sat=%d f=%d mask=0x%X ref=%d dd=%d prior=%d no_sd=%d lock0=%d tdcp=%.4f\n",
+              i+1,cand[i].sat,cand[i].freq+1,cand[i].freq_mask,
+              cand[i].refsat,cand[i].dd_count,cand[i].prior,
+              !cand[i].has_tdcp,cand[i].lock0,cand[i].tdcp);
     }
 
     for (i=0;i<6;i++) sys_left[i]=sys_count[i];
@@ -911,15 +981,15 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
         par_snapshot_t snap;
         int lock_mark=0;
 
-        if (par_excl[cand[i].sat-1][cand[i].freq]) continue;
-        if (drops+1>max_drop) break;
-        if (total_left-1<=PAR_MIN_TOTAL_DD) break;
-        if (sys_left[cand[i].m]-1<=PAR_MIN_SYS_DD) continue;
+        if (par_candidate_flagged(par_excl,cand+i)) continue;
+        if (drops+cand[i].dd_count>max_drop) continue;
+        if (total_left-cand[i].dd_count<=PAR_MIN_TOTAL_DD) continue;
+        if (sys_left[cand[i].m]-cand[i].dd_count<=PAR_MIN_SYS_DD) continue;
 
         par_save_snapshot(rtk,&snap);
-        par_excl[cand[i].sat-1][cand[i].freq]=1;
+        par_set_candidate_flag(par_excl,cand+i,1);
 
-        nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,par_excl,0,
+        nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,refsat,par_excl,0,
                       NULL,0);
         if (nb>0&&(min_trial_nb<=0||nb<min_trial_nb)) min_trial_nb=nb;
         cand[i].ratio=rtk->sol.ratio;
@@ -935,17 +1005,18 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
         if (par_ratio_valid(cand[i].ratio)&&
             cand[i].ratio>=base_ratio*PAR_LOCK_RATIO_FACTOR) {
             lock_mark=1;
-            lock_reset[cand[i].sat-1][cand[i].freq]=1;
+            par_set_candidate_flag(lock_reset,cand+i,1);
         }
 
-        trace(3,"PAR try sat=%d f=%d ref=%d nb=%d tdcp=%s%.4f ratio=%.3f thres=%.3f base=%.3f improve=%.3f lock=%d\n",
-              cand[i].sat,cand[i].freq+1,cand[i].refsat,nb,
-              cand[i].has_tdcp?"":"none ",cand[i].tdcp,cand[i].ratio,
-              cand[i].thres,base_ratio,cand[i].improve,lock_mark);
+        trace(3,"PAR try sat=%d f=%d mask=0x%X ref=%d dd=%d nb=%d no_sd=%d lock0=%d tdcp=%.4f ratio=%.3f thres=%.3f base=%.3f improve=%.3f lock=%d\n",
+              cand[i].sat,cand[i].freq+1,cand[i].freq_mask,
+              cand[i].refsat,cand[i].dd_count,nb,!cand[i].has_tdcp,
+              cand[i].lock0,cand[i].tdcp,cand[i].ratio,cand[i].thres,
+              base_ratio,cand[i].improve,lock_mark);
 
         if (nb>1&&cand[i].ratio>=cand[i].thres) {
-            lock_reset[cand[i].sat-1][cand[i].freq]=1;
-            nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,par_excl,1,
+            par_set_candidate_flag(lock_reset,cand+i,1);
+            nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,refsat,par_excl,1,
                           NULL,0);
             if (nb>1) {
                 new_base=par_calc_epoch_base_ratio(ratio_samples,ratio_sample_n);
@@ -958,18 +1029,19 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
                 rtk->sol.prev_ratio1=(float)full_ratio;
                 rtk->sol.prev_ratio2=rtk->sol.ratio;
                 trace(3,"PAR result: fixed best=%.3f thres=%.3f next_base=%.3f min_nb=%d drops=%d final_excl=%d lock_reset=%d\n",
-                      best_ratio,best_thres,new_base,min_trial_nb,drops+1,
+                      best_ratio,best_thres,new_base,min_trial_nb,
+                      drops+cand[i].dd_count,
                       par_count_flags(par_excl),lock_count);
                 return nb;
             }
         }
         if (par_ratio_improved(base_ratio,cand[i].ratio)) {
-            drops++;
-            total_left--;
-            sys_left[cand[i].m]--;
+            drops+=cand[i].dd_count;
+            total_left-=cand[i].dd_count;
+            sys_left[cand[i].m]-=cand[i].dd_count;
             continue;
         }
-        par_excl[cand[i].sat-1][cand[i].freq]=0;
+        par_set_candidate_flag(par_excl,cand+i,0);
         par_restore_snapshot(rtk,&snap);
     }
 
