@@ -559,6 +559,23 @@ static int ddidx_PAR(rtk_t *rtk, int *ix, int gps, int glo, int sbs,
     return nb;
 }
 
+/* translate PAR fixed DD phase-bias values to single-difference states ------*/
+static void restamb_PAR(rtk_t *rtk, const double *bias, const int *ix, int nb,
+                        double *xa)
+{
+    int i;
+
+    trace(3,"restamb_PAR : nb=%d\n",nb);
+
+    for (i=0;i<rtk->nx;i++) xa[i]=rtk->x [i];
+    for (i=0;i<rtk->na;i++) xa[i]=rtk->xa[i];
+
+    for (i=0;i<nb;i++) {
+        xa[ix[i*2  ]]=rtk->x[ix[i*2]];
+        xa[ix[i*2+1]]=xa[ix[i*2]]-bias[i];
+    }
+}
+
 /* resolve integer ambiguity for PAR ----------------------------------------*/
 static int resamb_PAR(rtk_t *rtk, double *bias, double *xa, int gps, int glo,
                       int sbs, const int refsat[6][NFREQ*2],
@@ -641,7 +658,7 @@ static int resamb_PAR(rtk_t *rtk, double *bias, double *xa, int gps, int glo,
                     matmulm("NT",na,na,nb,QQ ,Qab,rtk->Pa);
                     trace(3,"resamb_PAR : validation ok (nb=%d ratio=%.2f thresh=%.2f s=%.2f/%.2f)\n",
                           nb,s[0]==0.0?0.0:s[1]/s[0],rtk->sol.thres,s[0],s[1]);
-                    restamb(rtk,bias,nb,xa);
+                    restamb_PAR(rtk,bias,ix,nb,xa);
                 }
                 else nb=0;
             }
