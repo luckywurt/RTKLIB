@@ -1484,7 +1484,7 @@ void OptDialog::loadOptions(QSettings &settings)
     ui->cBPositionMode->setCurrentIndex(settings.value("prcopt/mode", 0).toInt());
     ui->cBSolution->setCurrentIndex(settings.value("prcopt/soltype", 0).toInt());
     ui->cBFrequencies->setCurrentIndex(settings.value("prcopt/nf", 2).toInt() > NFREQ - 1 ? NFREQ - 1 : settings.value("prcopt/nf", 2).toInt() - 1);
-    int navsys = settings.value("prcopt/navsys", SYS_GPS).toInt();
+    int navsys = settings.value("prcopt/navsys", SYS_GPS | SYS_GLO | SYS_GAL | SYS_CMP).toInt();
     ui->cBNavSys1->setChecked(navsys & SYS_GPS);
     ui->cBNavSys2->setChecked(navsys & SYS_GLO);
     ui->cBNavSys3->setChecked(navsys & SYS_GAL);
@@ -1536,9 +1536,9 @@ void OptDialog::loadOptions(QSettings &settings)
     ui->sBMeasurementError3->setValue(settings.value("prcopt/err2", 0.003).toDouble());
     ui->sBMeasurementError4->setValue(settings.value("prcopt/err3", 0.0).toDouble());
     ui->sBMeasurementError5->setValue(settings.value("prcopt/err4", 1.0).toDouble());
-    ui->sBMeasurementErrorSNR_Max->setValue(settings.value("prcopt/err5", 1.0).toDouble());
-    ui->sBMeasurementErrorSNR->setValue(settings.value("prcopt/err6", 1.0).toDouble());
-    ui->sBMeasurementErrorReceiver->setValue(settings.value("prcopt/err7", 1.0).toDouble());
+    ui->sBMeasurementErrorSNR_Max->setValue(settings.value("prcopt/err5", 52.0).toDouble());
+    ui->sBMeasurementErrorSNR->setValue(settings.value("prcopt/err6", 0.000).toDouble());
+    ui->sBMeasurementErrorReceiver->setValue(settings.value("prcopt/err7", 0.000).toDouble());
     // std
     ui->sBProcessNoise1->setValue(settings.value("prcopt/prn0", 1E-4).toDouble());
     ui->sBProcessNoise2->setValue(settings.value("prcopt/prn1", 1E-3).toDouble());
@@ -1546,11 +1546,11 @@ void OptDialog::loadOptions(QSettings &settings)
     ui->sBProcessNoise4->setValue(settings.value("prcopt/prn3", 10.0).toDouble());
     ui->sBProcessNoise5->setValue(settings.value("prcopt/prn4", 10.0).toDouble());
     ui->sBSatelliteClockStability->setValue(settings.value("prcopt/sclkstab", 5E-12).toDouble());
-    ui->sBValidThresAR->setValue(settings.value("prcopt/thresar0", 100.0).toDouble());
-    ui->sBMaxPositionVarAR->setValue(settings.value("prcopt/thresar1", 100.0).toDouble());
-    ui->sBGlonassHwBias->setValue(settings.value("prcopt/thresar2", 100.0).toDouble());
-    ui->sBValidThresARMin->setValue(settings.value("prcopt/thresar5", 100.0).toDouble());
-    ui->sBValidThresARMax->setValue(settings.value("prcopt/thresar6", 100.0).toDouble());
+    ui->sBValidThresAR->setValue(settings.value("prcopt/thresar0", 3.0).toDouble());
+    ui->sBMaxPositionVarAR->setValue(settings.value("prcopt/thresar1", 0.25).toDouble());
+    ui->sBGlonassHwBias->setValue(settings.value("prcopt/thresar2", 0.0).toDouble());
+    ui->sBValidThresARMin->setValue(settings.value("prcopt/thresar5", 3.0).toDouble());
+    ui->sBValidThresARMax->setValue(settings.value("prcopt/thresar6", 3.0).toDouble());
     ui->sBElevationMaskAR->setValue(settings.value("prcopt/elmaskar", 0.0).toDouble());
     ui->sBElevationMaskHold->setValue(settings.value("prcopt/elmaskhold", 0.0).toDouble());
     ui->sBSlipThreshold->setValue(settings.value("prcopt/thresslip", 0.05).toDouble());
