@@ -182,7 +182,7 @@ void Plot::readObservation(const QStringList &files)
     clearObservation();
 
     observation = obs;
-    navigation = *nav;
+    *navigation = *nav;
     free(nav);
     station = sta;
     simulatedObservation = 0;
@@ -321,7 +321,7 @@ void Plot::readNavigation(const QStringList &files)
 
     timeSpan(&ts, &te, &tint);
 
-    freenav(&navigation, 0xFF);
+    freenav(navigation, 0xFF);
 
     showMessage(tr("Reading navigation data..."));
 
@@ -329,11 +329,11 @@ void Plot::readNavigation(const QStringList &files)
 
     for (i = 0; i < files.size(); i++) {
         readrnxt(qPrintable(QDir::toNativeSeparators(files.at(i))), 1, ts, te, tint,
-                 qPrintable(plotOptDialog->getRinexOptions()), NULL, &navigation, NULL);
+                 qPrintable(plotOptDialog->getRinexOptions()), NULL, navigation, NULL);
     }
-    uniqnav(&navigation);
+    uniqnav(navigation);
 
-    if (navigation.n <= 0 && navigation.ng <= 0 && navigation.ns <= 0) {
+    if (navigation->n <= 0 && navigation->ng <= 0 && navigation->ns <= 0) {
         showMessage(tr("No navigation message: %1...").arg(QDir::toNativeSeparators(files.at(i))));
         readWaitEnd();
         return;
@@ -1093,10 +1093,11 @@ void Plot::connectStream()
         }
         if (rtStream[i] == STR_SERIAL) mode |= STR_MODE_W;
 
-        if ((p = path.indexOf("::"))) path = path.left(p);
-        if ((p = path.indexOf("/:")))  path = path.left(p);
-        if ((p = path.indexOf("@"))) name[i] = path.mid(p+1);
-        else name[i] = path;
+        QString buff = path;
+        if ((p = buff.indexOf("::"))) buff = buff.left(p);
+        if ((p = buff.indexOf("/:")))  buff = buff.left(p);
+        if ((p = buff.indexOf("@"))) name[i] = buff.mid(p+1);
+        else name[i] = buff;
 
         if (!stropen(stream + i, rtStream[i], mode, qPrintable(path))) {
             showMessage(tr("Connect error: %1").arg(name[0]));
@@ -1225,7 +1226,7 @@ void Plot::updateObservation(int nobs)
 
         if (plotOptDialog->getReceiverPosition() == 0) { // single point position
             opt.err[0] = 900.0;
-            pntpos(observation.data + i, j - i, &navigation, &opt, &sol, azel, NULL, msg);
+            pntpos(observation.data + i, j - i, navigation, &opt, &sol, azel, NULL, msg);
             matcpy(rr, sol.rr, 3, 1);
             ecef2pos(rr, pos);
         } else if (plotOptDialog->getReceiverPosition() == 1) { // lat/lon/height
@@ -1245,7 +1246,7 @@ void Plot::updateObservation(int nobs)
                     continue;
                 }
             } else {
-                if (!satpos(time, time, sat, EPHOPT_BRDC, &navigation, rs, dts, &var, &svh)) {
+                if (!satpos(time, time, sat, EPHOPT_BRDC, navigation, rs, dts, &var, &svh)) {
                     continue;
                 }
             }
@@ -1294,10 +1295,10 @@ void Plot::updateMp()
         // Choose two frequencies to calculate reference I.
         double freq1 = 0.0, freq2 = 0.0, I = 0.0;
         for (int j = 0; j < NFREQ + NEXOBS; j++) {
-            freq1 = sat2freq(data->sat, data->code[j], &navigation);
+            freq1 = sat2freq(data->sat, data->code[j], navigation);
             if (data->L[j] == 0.0 || freq1 == 0.0 ) continue;
             for (int k = j + 1; k < NFREQ + NEXOBS; k++) {
-                freq2 = sat2freq(data->sat, data->code[k], &navigation);
+                freq2 = sat2freq(data->sat, data->code[k], navigation);
                 if (data->L[k] == 0.0 || freq2 == 0.0 || freq1 == freq2) continue;
                 I = -CLIGHT * (data->L[j] / freq1-data->L[k] / freq2) / (1.0 - SQR(freq1 / freq2));
                 break;
@@ -1307,7 +1308,7 @@ void Plot::updateMp()
         if (freq1 == 0.0 || freq2 == 0.0) continue;
 
         for (int j = 0; j < NFREQ + NEXOBS; j++) {
-            double freq = sat2freq(data->sat, data->code[j], &navigation);
+            double freq = sat2freq(data->sat, data->code[j], navigation);
             if (data->P[j] == 0.0 || data->L[j] == 0.0 || freq == 0.0) continue;
             multipath[j][i] = data->P[j] - CLIGHT * data->L[j] / freq - 2.0 * SQR(freq1 / freq) * I;
         }
@@ -1370,8 +1371,8 @@ void Plot::updateIono()
 
     for (i = 0; i < observation.n; i++) {
         data = observation.data + i;
-        freq1 = sat2freq(data->sat, data->code[0], &navigation);
-        freq2 = sat2freq(data->sat, data->code[1], &navigation);
+        freq1 = sat2freq(data->sat, data->code[0], navigation);
+        freq2 = sat2freq(data->sat, data->code[1], navigation);
         if (data->P[0] == 0.0 || data->P[1] == 0.0 || freq1 == 0.0 || freq2 == 0.0 || freq1 == freq2) continue;
 
         I = 1/ 40.308 * SQR(freq1)*SQR(freq2)/(SQR(freq1)-SQR(freq2))*1e-16;
@@ -1423,7 +1424,7 @@ void Plot::clearObservation()
     sta_t sta0 = {};
 
     freeobs(&observation);
-    freenav(&navigation, 0xFF);
+    freenav(navigation, 0xFF);
 
     delete [] indexObservation; indexObservation = NULL;
     delete [] azimuth; azimuth = NULL;
