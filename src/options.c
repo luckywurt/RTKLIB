@@ -118,6 +118,7 @@ EXPORT opt_t sysopts[]={
     {"pos2-par-minsysdd",0,(void *)&prcopt_.par_min_sys_dd,""},
     {"pos2-par-maxdropfrac",1,(void *)&prcopt_.par_max_drop_frac,""},
     {"pos2-par-lockfactor",1,(void *)&prcopt_.par_lock_factor,""},
+    {"pos2-par-maxpairtrials",0,(void *)&prcopt_.par_max_pair_trials,""},
     {"pos2-elmaskhold", 1,  (void *)&elmaskhold_,        "deg"  },
     {"pos2-aroutcnt",   0,  (void *)&prcopt_.maxout,     ""     },
     {"pos2-maxage",     1,  (void *)&prcopt_.maxtdiff,   "s"    },

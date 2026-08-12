@@ -339,6 +339,29 @@ static int par_ratio_valid(double ratio)
     return ratio==ratio&&ratio>0.0&&fabs(ratio)<1E99;
 }
 
+static int par_count_flags(const uint8_t flags[MAXSAT][NFREQ])
+{
+    int i,f,n=0;
+
+    for (i=0;i<MAXSAT;i++) for (f=0;f<NFREQ;f++) {
+        if (flags[i][f]) n++;
+    }
+    return n;
+}
+
+static unsigned int par_flags_hash(const uint8_t flags[MAXSAT][NFREQ])
+{
+    unsigned int hash=2166136261u;
+    int i,f;
+
+    for (i=0;i<MAXSAT;i++) for (f=0;f<NFREQ;f++) {
+        if (!flags[i][f]) continue;
+        hash^=(unsigned int)(i*NFREQ+f+1);
+        hash*=16777619u;
+    }
+    return hash;
+}
+
 static void par_save_snapshot(rtk_t *rtk, par_snapshot_t *snap)
 {
     int i,j;
@@ -491,12 +514,14 @@ static void restamb_PAR(rtk_t *rtk, const double *bias, const int *ix, int nb,
 static int resamb_PAR(rtk_t *rtk, double *bias, double *xa, int gps, int glo,
                       int sbs, const int refsat[6][NFREQ*2],
                       const uint8_t par_excl[MAXSAT][NFREQ], int commit,
-                      par_dd_t *dd, int maxdd)
+                      par_dd_t *dd, int maxdd, gtime_t time, int call_id,
+                      const char *stage)
 {
     prcopt_t *opt=&rtk->opt;
     int i,j,nb,nb1,info,nx=rtk->nx,na=rtk->na;
     double *DP,*y,*b,*db,*Qb,*Qab,*QQ,s[2],coeff[3];
     int *ix;
+    char tstr[64];
 
     trace(3,"resamb_PAR : nx=%d commit=%d\n",nx,commit);
 
@@ -504,7 +529,11 @@ static int resamb_PAR(rtk_t *rtk, double *bias, double *xa, int gps, int glo,
     rtk->sol.thres=(float)opt->thresar[0];
     rtk->nb_ar=0;
     ix=imat(nx,2);
-    if ((nb=ddidx_PAR(rtk,ix,gps,glo,sbs,refsat,par_excl,dd,maxdd))<(rtk->opt.minfixsats-1)) {
+    nb=ddidx_PAR(rtk,ix,gps,glo,sbs,refsat,par_excl,dd,maxdd);
+    trace(3,"AR call: time=%s solver=par id=%d stage=%s commit=%d nb=%d ddhash=%08X excl=%d exclhash=%08X\n",
+          time2str(time,tstr,3),call_id,stage,commit,nb,ar_dd_hash(ix,nb),
+          par_count_flags(par_excl),par_flags_hash(par_excl));
+    if (nb<(rtk->opt.minfixsats-1)) {
         if (commit) errmsg(rtk,"not enough valid PAR double-differences\n");
         free(ix);
         return -1;
@@ -779,16 +808,6 @@ static void par_merge_flags(uint8_t dest[MAXSAT][NFREQ],
     }
 }
 
-static int par_count_flags(const uint8_t flags[MAXSAT][NFREQ])
-{
-    int i,f,n=0;
-
-    for (i=0;i<MAXSAT;i++) for (f=0;f<NFREQ;f++) {
-        if (flags[i][f]) n++;
-    }
-    return n;
-}
-
 static void par_record_lock_reset(int reset_nb[MAXSAT][NFREQ],
                                   const uint8_t reset[MAXSAT][NFREQ], int nb)
 {
@@ -839,12 +858,14 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
     int lock_reset_nb[MAXSAT][NFREQ]={{0}};
     double sd[MAXSAT][NFREQ],full_ratio,full_thres,current_ratio,current_thres;
     double ratio_factor,max_drop_frac,lock_factor;
+    double pair_score[MAXSAT*NFREQ];
     par_cand_t cand[MAXSAT*NFREQ];
     par_dd_t full_dd[MAXSAT*NFREQ];
+    int pair_order[MAXSAT*NFREQ];
     int sys_count[6],sys_left[6],batch_sys[6];
     int i,m,nb,full_nb,ncand,sd_n,cache_ok,current_ratio_ok;
     int gps1=1,glo1,sbas1=0,drops=0,max_drop,total_left;
-    int min_total_dd,min_sys_dd,lock_count=0;
+    int min_total_dd,min_sys_dd,lock_count=0,max_pair_trials,ar_call_id=0;
     float posvar=0.0f;
 
     for (i=0;i<3;i++) posvar+=(float)rtk->P[i+i*rtk->nx];
@@ -863,10 +884,13 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
                  rtk->opt.par_min_total_dd:PAR_MIN_TOTAL_DD_DEFAULT;
     min_sys_dd=rtk->opt.par_min_sys_dd>=0?
                rtk->opt.par_min_sys_dd:PAR_MIN_SYS_DD_DEFAULT;
+    max_pair_trials=rtk->opt.par_max_pair_trials>=0?
+                    rtk->opt.par_max_pair_trials:0;
 
-    trace(3,"manage_amb_PAR: posvar=%.6f prev_fix=%d refsel=%d ratio_factor=%.3f min_dd=%d min_sys_dd=%d max_drop=%.3f lock_factor=%.3f\n",
+    trace(3,"manage_amb_PAR: posvar=%.6f prev_fix=%d refsel=%d ratio_factor=%.3f min_dd=%d min_sys_dd=%d max_drop=%.3f lock_factor=%.3f max_pair=%d\n",
           posvar,previous_solution_fixed,rtk->opt.par_refsel==0?0:1,
-          ratio_factor,min_total_dd,min_sys_dd,max_drop_frac,lock_factor);
+          ratio_factor,min_total_dd,min_sys_dd,max_drop_frac,lock_factor,
+          max_pair_trials);
     trace(3,"manage_amb_PAR: prevRatios= %.3f %.3f\n",
           rtk->sol.prev_ratio1,rtk->sol.prev_ratio2);
 
@@ -882,7 +906,7 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
     glo1=(rtk->opt.navsys&SYS_GLO)?(((rtk->opt.glomodear==GLO_ARMODE_FIXHOLD)&&!rtk->holdamb)?0:1):0;
 
     nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,refsat,par_excl,1,
-                  full_dd,MAXSAT*NFREQ);
+                  full_dd,MAXSAT*NFREQ,obs[0].time,++ar_call_id,"full");
     full_nb=rtk->nb_ar;
     full_ratio=rtk->sol.ratio;
     full_thres=rtk->sol.thres;
@@ -936,7 +960,7 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
 
             par_save_snapshot(rtk,&snap);
             nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,refsat,batch_excl,0,
-                          NULL,0);
+                          NULL,0,obs[0].time,++ar_call_id,"batch-trial");
             trial_nb=rtk->nb_ar;
             trial_ratio=rtk->sol.ratio;
             trial_thres=rtk->sol.thres;
@@ -946,7 +970,8 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
 
             if (nb>1) {
                 nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,refsat,
-                              batch_excl,1,NULL,0);
+                              batch_excl,1,NULL,0,obs[0].time,
+                              ++ar_call_id,"batch-commit");
                 if (nb>1) {
                     par_merge_flags(par_excl,batch_excl);
                     par_record_lock_reset(lock_reset_nb,batch_excl,trial_nb);
@@ -1000,7 +1025,7 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
         par_set_candidate_flag(par_excl,cand+i,1);
 
         nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,refsat,par_excl,0,
-                      NULL,0);
+                      NULL,0,obs[0].time,++ar_call_id,"single-trial");
         trial_nb=rtk->nb_ar;
         trial_ratio=rtk->sol.ratio;
         trial_thres=rtk->sol.thres;
@@ -1013,7 +1038,7 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
 
         if (nb>1) {
             nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,refsat,par_excl,1,
-                          NULL,0);
+                          NULL,0,obs[0].time,++ar_call_id,"single-commit");
             if (nb>1) {
                 par_record_candidate_lock_reset(lock_reset_nb,cand+i,
                                                 trial_nb);
@@ -1048,6 +1073,139 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
         par_restore_snapshot(rtk,&snap);
         trace(3,"PAR try restored sat=%d ratio=%.3f current=%.3f valid=%d\n",
               cand[i].sat,trial_ratio,current_ratio,current_ratio_ok);
+    }
+
+    if (max_pair_trials>0) {
+        par_snapshot_t pair_base;
+        double best_margin=-1.0,best_ratio=0.0,best_thres=0.0;
+        int pair_n=0,pair_trials=0,best_i=-1,best_j=-1,best_nb=0;
+        int j,k;
+
+        rtk->sol.ratio=(float)current_ratio;
+        rtk->sol.thres=(float)current_thres;
+        par_save_snapshot(rtk,&pair_base);
+
+        for (i=0;i<ncand;i++) {
+            double trial_ratio,trial_thres,score=-1.0;
+            int trial_nb;
+
+            if (par_candidate_flagged(par_excl,cand+i)) continue;
+            if (drops+cand[i].dd_count>max_drop) continue;
+            if (total_left-cand[i].dd_count<=min_total_dd) continue;
+            if (sys_left[cand[i].m]-cand[i].dd_count<=min_sys_dd) continue;
+
+            par_set_candidate_flag(par_excl,cand+i,1);
+            nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,refsat,par_excl,0,
+                          NULL,0,obs[0].time,++ar_call_id,"pair-score");
+            trial_nb=rtk->nb_ar;
+            trial_ratio=rtk->sol.ratio;
+            trial_thres=rtk->sol.thres;
+            if (par_ratio_valid(trial_ratio)&&trial_thres>0.0) {
+                score=trial_ratio/trial_thres;
+            }
+            pair_order[pair_n]=i;
+            pair_score[pair_n++]=score;
+            trace(3,"PAR pair score: sat=%d mask=0x%X nb=%d ratio=%.3f thres=%.3f score=%.6f fixed=%d\n",
+                  cand[i].sat,cand[i].freq_mask,trial_nb,trial_ratio,
+                  trial_thres,score,nb>1);
+            par_set_candidate_flag(par_excl,cand+i,0);
+            par_restore_snapshot(rtk,&pair_base);
+        }
+        for (i=1;i<pair_n;i++) {
+            int oi=pair_order[i];
+            double os=pair_score[i];
+
+            for (j=i;j>0&&os>pair_score[j-1];j--) {
+                pair_order[j]=pair_order[j-1];
+                pair_score[j]=pair_score[j-1];
+            }
+            pair_order[j]=oi;
+            pair_score[j]=os;
+        }
+
+        for (k=1;k<pair_n&&pair_trials<max_pair_trials;k++) {
+            for (j=0;j<k&&pair_trials<max_pair_trials;j++) {
+                const par_cand_t *a=cand+pair_order[j];
+                const par_cand_t *b=cand+pair_order[k];
+                double trial_ratio,trial_thres,margin=-1.0;
+                int pair_dd=a->dd_count+b->dd_count,pair_ok=1,trial_nb;
+
+                if (drops+pair_dd>max_drop||
+                    total_left-pair_dd<=min_total_dd) {
+                    pair_ok=0;
+                }
+                for (m=0;m<6&&pair_ok;m++) {
+                    int sys_drop=(a->m==m?a->dd_count:0)+
+                                 (b->m==m?b->dd_count:0);
+                    if (sys_drop>0&&sys_left[m]-sys_drop<=min_sys_dd) {
+                        pair_ok=0;
+                    }
+                }
+                if (!pair_ok) continue;
+
+                par_set_candidate_flag(par_excl,a,1);
+                par_set_candidate_flag(par_excl,b,1);
+                nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,refsat,
+                              par_excl,0,NULL,0,obs[0].time,++ar_call_id,
+                              "pair-trial");
+                pair_trials++;
+                trial_nb=rtk->nb_ar;
+                trial_ratio=rtk->sol.ratio;
+                trial_thres=rtk->sol.thres;
+                if (par_ratio_valid(trial_ratio)&&trial_thres>0.0) {
+                    margin=trial_ratio/trial_thres;
+                }
+                else if (nb>1) margin=0.0;
+                trace(3,"PAR pair try: trial=%d sat1=%d mask1=0x%X sat2=%d mask2=0x%X nb=%d ratio=%.3f thres=%.3f margin=%.6f action=%s\n",
+                      pair_trials,a->sat,a->freq_mask,b->sat,b->freq_mask,
+                      trial_nb,trial_ratio,trial_thres,margin,
+                      nb>1?"fixed":"restored");
+                if (nb>1&&margin>best_margin) {
+                    best_margin=margin;
+                    best_ratio=trial_ratio;
+                    best_thres=trial_thres;
+                    best_i=pair_order[j];
+                    best_j=pair_order[k];
+                    best_nb=trial_nb;
+                }
+                par_set_candidate_flag(par_excl,a,0);
+                par_set_candidate_flag(par_excl,b,0);
+                par_restore_snapshot(rtk,&pair_base);
+            }
+        }
+        if (best_i>=0&&best_j>=0) {
+            const par_cand_t *a=cand+best_i;
+            const par_cand_t *b=cand+best_j;
+
+            par_set_candidate_flag(par_excl,a,1);
+            par_set_candidate_flag(par_excl,b,1);
+            nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,refsat,par_excl,1,
+                          NULL,0,obs[0].time,++ar_call_id,"pair-commit");
+            if (nb>1) {
+                par_record_candidate_lock_reset(lock_reset_nb,a,best_nb);
+                par_record_candidate_lock_reset(lock_reset_nb,b,best_nb);
+                drops+=a->dd_count+b->dd_count;
+                par_store_sd_cache(rtk,obs[0].time,sd,sd_valid);
+                lock_count=par_apply_lock_reset(rtk,lock_reset_nb,
+                                                lock_factor);
+                rtk->sol.prev_ratio1=(float)full_ratio;
+                rtk->sol.prev_ratio2=rtk->sol.ratio;
+                trace(3,"PAR pair result: fixed trials=%d sat1=%d mask1=0x%X sat2=%d mask2=0x%X trial_ratio=%.3f trial_thres=%.3f commit_ratio=%.3f excl=%d lock_reset=%d\n",
+                      pair_trials,a->sat,a->freq_mask,b->sat,b->freq_mask,
+                      best_ratio,best_thres,rtk->sol.ratio,
+                      par_count_flags(par_excl),lock_count);
+                return nb;
+            }
+            par_set_candidate_flag(par_excl,a,0);
+            par_set_candidate_flag(par_excl,b,0);
+            par_restore_snapshot(rtk,&pair_base);
+            trace(3,"PAR pair result: commit-failed trials=%d sat1=%d sat2=%d\n",
+                  pair_trials,a->sat,b->sat);
+        }
+        else {
+            trace(3,"PAR pair result: no-fix trials=%d candidates=%d budget=%d\n",
+                  pair_trials,pair_n,max_pair_trials);
+        }
     }
 
     par_store_sd_cache(rtk,obs[0].time,sd,sd_valid);

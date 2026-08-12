@@ -1577,6 +1577,17 @@ static double intpres(gtime_t time, const obsd_t *obs, int n, const nav_t *nav, 
   }
   return fabs(ttb) < fabs(tt) ? ttb : tt;
 }
+static unsigned int ar_dd_hash(const int *ix, int nb)
+{
+    unsigned int hash=2166136261u;
+    int i;
+
+    for (i=0;i<nb*2;i++) {
+        hash^=(unsigned int)(ix[i]+1);
+        hash*=16777619u;
+    }
+    return hash;
+}
 /* index for single to double-difference transformation matrix (D') --------------------*/
 static int ddidx(rtk_t *rtk, int *ix, int gps, int glo, int sbs)
 {
@@ -1785,13 +1796,16 @@ static void holdamb(rtk_t *rtk, const double *xa)
     }
 }
 /* resolve integer ambiguity by LAMBDA ---------------------------------------*/
-static int resamb_LAMBDA(rtk_t *rtk, double *bias, double *xa,int gps,int glo,int sbs)
+static int resamb_LAMBDA(rtk_t *rtk, double *bias, double *xa, int gps,
+                         int glo, int sbs, gtime_t time, int call_id,
+                         const char *stage)
 {
     prcopt_t *opt=&rtk->opt;
     int i,j,nb,nb1,info,nx=rtk->nx,na=rtk->na;
     double *DP,*y,*b,*db,*Qb,*Qab,*QQ,s[2];
     int *ix;
     double coeff[3];
+    char tstr[64];
 
     trace(3,"resamb_LAMBDA : nx=%d\n",nx);
 
@@ -1801,6 +1815,8 @@ static int resamb_LAMBDA(rtk_t *rtk, double *bias, double *xa,int gps,int glo,in
           used to translate phase biases to double difference */
     ix=imat(nx,2);
     nb=ddidx(rtk,ix,gps,glo,sbs);
+    trace(3,"AR call: time=%s solver=original id=%d stage=%s nb=%d ddhash=%08X\n",
+          time2str(time,tstr,3),call_id,stage,nb,ar_dd_hash(ix,nb));
 
     /* count unique sats used for AR on at least one frequency */
     int ns=0,f;
@@ -1924,10 +1940,13 @@ static int resamb_LAMBDA(rtk_t *rtk, double *bias, double *xa,int gps,int glo,in
 }
 
 /* resolve integer ambiguity by LAMBDA using partial fix techniques and multiple attempts -----------------------*/
-static int manage_amb_LAMBDA(rtk_t *rtk, double *bias, double *xa, const int *sat, int nf, int ns)
+static int manage_amb_LAMBDA(rtk_t *rtk, double *bias, double *xa,
+                             const int *sat, int nf, int ns, gtime_t time)
 {
     int gps1=-1,glo1=-1,sbas1=-1,gps2,glo2,sbas2,nb,rerun,dly;
+    int ar_call_id=0;
     float ratio1,posvar=0;
+    char tstr[64];
 
     /* calc position variance, will skip AR if too high to avoid false fix */
     for (int i=0;i<3;i++) posvar+=rtk->P[i+i*rtk->nx];
@@ -1999,7 +2018,10 @@ static int manage_amb_LAMBDA(rtk_t *rtk, double *bias, double *xa, const int *sa
        (rtk->opt.glomodear != GLO_ARMODE_FIXHOLD || rtk->holdamb);
     sbas1=(rtk->opt.navsys&SYS_GLO)?glo1:((rtk->opt.navsys&SYS_SBS)?1:0);
     /* first attempt to resolve ambiguities */
-    nb=resamb_LAMBDA(rtk,bias,xa,gps1,glo1,sbas1);
+    nb=resamb_LAMBDA(rtk,bias,xa,gps1,glo1,sbas1,time,++ar_call_id,"full");
+    trace(3,"AR result: time=%s solver=original id=%d stage=full nb=%d ratio=%.3f thres=%.3f fixed=%d\n",
+          time2str(time,tstr,3),ar_call_id,nb,rtk->sol.ratio,
+          rtk->sol.thres,nb>1);
     ratio1=rtk->sol.ratio;
     /* reject bad satellites if AR filtering enabled */
     if (rtk->opt.arfilter) {
@@ -2024,7 +2046,11 @@ static int manage_amb_LAMBDA(rtk_t *rtk, double *bias, double *xa, const int *sa
         if (rerun) {
             trace(3,"rerun AR with new sats removed\n");
             /* try again with new sats removed */
-            nb=resamb_LAMBDA(rtk,bias,xa,gps1,glo1,sbas1);
+            nb=resamb_LAMBDA(rtk,bias,xa,gps1,glo1,sbas1,time,
+                             ++ar_call_id,"new-sat-rerun");
+            trace(3,"AR result: time=%s solver=original id=%d stage=new-sat-rerun nb=%d ratio=%.3f thres=%.3f fixed=%d\n",
+                  time2str(time,tstr,3),ar_call_id,nb,rtk->sol.ratio,
+                  rtk->sol.thres,nb>1);
         }
     }
     rtk->sol.prev_ratio1=ratio1;
@@ -2037,8 +2063,13 @@ static int manage_amb_LAMBDA(rtk_t *rtk, double *bias, double *xa, const int *sa
         gps2=rtk->opt.gpsmodear==0&&rtk->sol.ratio>=rtk->sol.thres?0:1;
 
         /* if modes changed since initial AR run or haven't run yet,re-run with new modes */
-        if (glo1!=glo2||gps1!=gps2)
-            nb=resamb_LAMBDA(rtk,bias,xa,gps2,glo2,sbas2);
+        if (glo1!=glo2||gps1!=gps2) {
+            nb=resamb_LAMBDA(rtk,bias,xa,gps2,glo2,sbas2,time,
+                             ++ar_call_id,"glo-rerun");
+            trace(3,"AR result: time=%s solver=original id=%d stage=glo-rerun nb=%d ratio=%.3f thres=%.3f fixed=%d\n",
+                  time2str(time,tstr,3),ar_call_id,nb,rtk->sol.ratio,
+                  rtk->sol.thres,nb>1);
+        }
     }
     /* Restore excluded sat if still no fix or significant increase in ar ratio */
     if (excsat && (rtk->sol.ratio < rtk->sol.thres) &&
@@ -2282,7 +2313,7 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
                                  previous_solution_fixed);
         }
         else {
-            nb_ar=manage_amb_LAMBDA(rtk,bias,xa,sat,nf,ns);
+            nb_ar=manage_amb_LAMBDA(rtk,bias,xa,sat,nf,ns,obs[0].time);
         }
         /* if valid fixed solution, process it */
         if (nb_ar>1) {
