@@ -902,8 +902,9 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
         rtk->nb_ar=0;
         return 0;
     }
-    /* TODO: verify GLONASS fix-hold/autocal edge cases before special handling. */
-    glo1=(rtk->opt.navsys&SYS_GLO)?(((rtk->opt.glomodear==GLO_ARMODE_FIXHOLD)&&!rtk->holdamb)?0:1):0;
+    glo1=(rtk->opt.navsys&SYS_GLO)&&
+         rtk->opt.glomodear!=GLO_ARMODE_OFF&&
+         (rtk->opt.glomodear!=GLO_ARMODE_FIXHOLD||rtk->holdamb);
 
     nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,refsat,par_excl,1,
                   full_dd,MAXSAT*NFREQ,obs[0].time,++ar_call_id,"full");
