@@ -55,7 +55,6 @@
                               /* solution: 0   = run every epoch, */
                               /*           0.5 = skip except for first*/
 #define SEL_METHOD_GEO 1    /* reference satellite selection method (0:elmax,1:geometry) */
-#define USE_PAR 1           /* ambiguity resolution method (0:LAMBDA,1:PAR) */
 
 /* constants/macros ----------------------------------------------------------*/
 
@@ -1280,7 +1279,7 @@ static int ddres(rtk_t *rtk, const obsd_t *obs, double dt, const double *x,
         for (f=opt->mode>PMODE_DGPS?0:nf;f<nf*2;f++) {
             frq=f%nf;code=f<nf?0:1;
 
-            if (USE_PAR) {
+            if (rtk->opt.modear!=ARMODE_OFF&&rtk->opt.arsolver==1) {
                 /* Keep PAR residuals in the same DD basis as ddidx_PAR(). */
                 for (i=-1,j=0;j<ns;j++) {
                     if (sat[j]==refsat[m][f]) {i=j; break;}
@@ -2099,9 +2098,10 @@ static int valpos(rtk_t *rtk, const double *v, const double *R, const int *vflg,
            nu       I       # of user observations (rover)
            nr       I       # of ref observations  (base)
            nav      I       satellite navigation data
+           prevfix  I       previous saved solution is fixed
  */
 static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
-                  const nav_t *nav)
+                  const nav_t *nav, int previous_solution_fixed)
 {
     prcopt_t *opt=&rtk->opt;
     gtime_t time=obs[0].time;
@@ -2193,10 +2193,11 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
         errmsg(rtk,"rover initial position error\n");
         stat=SOLQ_NONE;
     }
-    else if (USE_PAR&&SEL_METHOD_GEO&&opt->mode>PMODE_DGPS) {
+    else if (opt->modear!=ARMODE_OFF&&rtk->opt.arsolver==1&&
+             SEL_METHOD_GEO&&opt->mode>PMODE_DGPS) {
         select_sat_geom(rtk,obs,dt,sat,y,e,azel,freq,iu,ir,ns,nf,xp,refsat);
     }
-    else if (USE_PAR) {
+    else if (opt->modear!=ARMODE_OFF&&rtk->opt.arsolver==1) {
         select_sat_elmax(rtk,sat,y,azel,iu,ir,ns,nf,refsat);
     }
     for (i=0;stat!=SOLQ_NONE&&i<opt->niter;i++) {
@@ -2277,8 +2278,9 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
     if (stat==SOLQ_FLOAT) {
         int nb_ar;
 
-        if (USE_PAR) {
-            nb_ar=manage_amb_PAR(rtk,obs,sat,iu,ir,ns,nf,refsat,y,bias,xa);
+        if (opt->modear!=ARMODE_OFF&&rtk->opt.arsolver==1) {
+            nb_ar=manage_amb_PAR(rtk,obs,sat,iu,ir,ns,nf,refsat,y,bias,xa,
+                                 previous_solution_fixed);
         }
         else {
             nb_ar=manage_amb_LAMBDA(rtk,bias,xa,sat,nf,ns);
@@ -2424,11 +2426,9 @@ extern void rtkinit(rtk_t *rtk, const prcopt_t *opt)
     rtk->par_sd_time.time=0;
     rtk->par_sd_time.sec=0.0;
     rtk->par_sd_n=0;
-    rtk->par_ratio_base=0.0;
     for (i=0;i<MAXSAT;i++) for (int j=0;j<NFREQ;j++) {
         rtk->par_sd[i][j]=0.0;
         rtk->par_sd_valid[i][j]=0;
-        rtk->par_excl_prev[i][j]=0;
     }
 }
 /* free rtk control ------------------------------------------------------------
@@ -2508,7 +2508,7 @@ extern int rtkpos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     prcopt_t *opt=&rtk->opt;
     sol_t solb={{0}};
     gtime_t time;
-    int i,nu,nr;
+    int i,nu,nr,previous_solution_fixed=rtk->sol.stat==SOLQ_FIX;
     char msg[128]="";
 
     char tstr[40];
@@ -2609,7 +2609,7 @@ extern int rtkpos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     }
 
     /* Relative positioning */
-    relpos(rtk,obs,nu,nr,nav);
+    relpos(rtk,obs,nu,nr,nav,previous_solution_fixed);
     rtk->epoch++;
     outsolstat(rtk,nav);
 

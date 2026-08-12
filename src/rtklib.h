@@ -1053,6 +1053,7 @@ typedef struct {        /* processing options type */
     int gpsmodear;      /* GPS AR mode, debug/learning only (0:off,1:on) */
     int bdsmodear;      /* BeiDou AR mode (0:off,1:on) */
     int arfilter;       /* AR filtering to reject bad sats (0:off,1:on) */
+    int arsolver;       /* AR solver (0:original,1:PAR) */
     int maxout;         /* obs outage count to reset bias */
     int minlock;        /* min lock count to fix ambiguity */
     int minfixsats;     /* min sats to fix integer ambiguities */
@@ -1060,6 +1061,11 @@ typedef struct {        /* processing options type */
     int mindropsats;    /* min sats to drop sats in AR */
     int minfix;         /* min fix count to hold ambiguity */
     int armaxiter;      /* max iteration to resolve ambiguity */
+    double par_ratio_factor;    /* PAR ratio improvement factor */
+    int par_min_total_dd;       /* PAR min total DD count */
+    int par_min_sys_dd;         /* PAR min DD count per system */
+    double par_max_drop_frac;   /* PAR max excluded DD fraction */
+    double par_lock_factor;     /* PAR lock reset delay factor */
     int ionoopt;        /* ionosphere option (IONOOPT_???) */
     int tropopt;        /* troposphere option (TROPOPT_???) */
     int dynamics;       /* dynamics model (0:none,1:velocity,2:accel) */
@@ -1251,8 +1257,6 @@ typedef struct {        /* RTK control/result type */
     int par_sd_n;       /* number of valid PAR single-difference cache entries */
     double par_sd[MAXSAT][NFREQ]; /* PAR phase single differences (m) */
     uint8_t par_sd_valid[MAXSAT][NFREQ]; /* PAR phase single-difference valid flag */
-    uint8_t par_excl_prev[MAXSAT][NFREQ]; /* previous PAR final exclusion record */
-    double par_ratio_base; /* previous PAR raw-ratio baseline */
 } rtk_t;
 
 typedef struct {        /* receiver raw data control type */

@@ -60,6 +60,7 @@ static char snrmask_[NFREQ][1024];
 #define STAOPT  "0:all,1:single"
 #define STSOPT  "0:off,1:state,2:residual"
 #define ARMOPT  "0:off,1:continuous,2:instantaneous,3:fix-and-hold"
+#define ARSOPT  "0:original,1:par"
 #define POSOPT  "0:llh,1:xyz,2:single,3:posfile,4:rinexhead,5:rtcm"
 #define TIDEOPT "1:solid+2:otl+4:spole"
 #define PHWOPT  "0:off,1:on,2:precise"
@@ -93,6 +94,7 @@ EXPORT opt_t sysopts[]={
     {"pos2-gloarmode",  3,  (void *)&prcopt_.glomodear,  GAROPT },
     {"pos2-bdsarmode",  3,  (void *)&prcopt_.bdsmodear,  SWTOPT },
     {"pos2-arfilter",   3,  (void *)&prcopt_.arfilter,   SWTOPT },
+    {"pos2-arsolver",   3,  (void *)&prcopt_.arsolver,   ARSOPT },
     {"pos2-arthres",    1,  (void *)&prcopt_.thresar[0], ""     },
     {"pos2-arthresmin", 1,  (void *)&prcopt_.thresar[5], ""     },
     {"pos2-arthresmax", 1,  (void *)&prcopt_.thresar[6], ""     },
@@ -109,6 +111,11 @@ EXPORT opt_t sysopts[]={
     {"pos2-arelmask",   1,  (void *)&elmaskar_,          "deg"  },
     {"pos2-arminfix",   0,  (void *)&prcopt_.minfix,     ""     },
     {"pos2-armaxiter",  0,  (void *)&prcopt_.armaxiter,  ""     },
+    {"pos2-par-ratiofactor",1,(void *)&prcopt_.par_ratio_factor,""},
+    {"pos2-par-mintotaldd",0,(void *)&prcopt_.par_min_total_dd,""},
+    {"pos2-par-minsysdd",0,(void *)&prcopt_.par_min_sys_dd,""},
+    {"pos2-par-maxdropfrac",1,(void *)&prcopt_.par_max_drop_frac,""},
+    {"pos2-par-lockfactor",1,(void *)&prcopt_.par_lock_factor,""},
     {"pos2-elmaskhold", 1,  (void *)&elmaskhold_,        "deg"  },
     {"pos2-aroutcnt",   0,  (void *)&prcopt_.maxout,     ""     },
     {"pos2-maxage",     1,  (void *)&prcopt_.maxtdiff,   "s"    },
