@@ -864,9 +864,9 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
     min_sys_dd=rtk->opt.par_min_sys_dd>=0?
                rtk->opt.par_min_sys_dd:PAR_MIN_SYS_DD_DEFAULT;
 
-    trace(3,"manage_amb_PAR: posvar=%.6f prev_fix=%d ratio_factor=%.3f min_dd=%d min_sys_dd=%d max_drop=%.3f lock_factor=%.3f\n",
-          posvar,previous_solution_fixed,ratio_factor,min_total_dd,min_sys_dd,
-          max_drop_frac,lock_factor);
+    trace(3,"manage_amb_PAR: posvar=%.6f prev_fix=%d refsel=%d ratio_factor=%.3f min_dd=%d min_sys_dd=%d max_drop=%.3f lock_factor=%.3f\n",
+          posvar,previous_solution_fixed,rtk->opt.par_refsel==0?0:1,
+          ratio_factor,min_total_dd,min_sys_dd,max_drop_frac,lock_factor);
     trace(3,"manage_amb_PAR: prevRatios= %.3f %.3f\n",
           rtk->sol.prev_ratio1,rtk->sol.prev_ratio2);
 

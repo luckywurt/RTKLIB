@@ -1061,6 +1061,7 @@ typedef struct {        /* processing options type */
     int mindropsats;    /* min sats to drop sats in AR */
     int minfix;         /* min fix count to hold ambiguity */
     int armaxiter;      /* max iteration to resolve ambiguity */
+    int par_refsel;     /* PAR reference selection (0:elmax,1:geometry) */
     double par_ratio_factor;    /* PAR ratio improvement factor */
     int par_min_total_dd;       /* PAR min total DD count */
     int par_min_sys_dd;         /* PAR min DD count per system */

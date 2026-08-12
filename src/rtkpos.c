@@ -54,7 +54,6 @@
 #define STD_PREC_VAR_THRESH 0  /* pos variance threshold to skip standard precision */
                               /* solution: 0   = run every epoch, */
                               /*           0.5 = skip except for first*/
-#define SEL_METHOD_GEO 1    /* reference satellite selection method (0:elmax,1:geometry) */
 
 /* constants/macros ----------------------------------------------------------*/
 
@@ -2194,7 +2193,7 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
         stat=SOLQ_NONE;
     }
     else if (opt->modear!=ARMODE_OFF&&rtk->opt.arsolver==1&&
-             SEL_METHOD_GEO&&opt->mode>PMODE_DGPS) {
+             rtk->opt.par_refsel!=0&&opt->mode>PMODE_DGPS) {
         select_sat_geom(rtk,obs,dt,sat,y,e,azel,freq,iu,ir,ns,nf,xp,refsat);
     }
     else if (opt->modear!=ARMODE_OFF&&rtk->opt.arsolver==1) {
