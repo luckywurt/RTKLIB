@@ -1067,7 +1067,7 @@ typedef struct {        /* processing options type */
     int par_min_sys_dd;         /* PAR min DD count per system */
     double par_max_drop_frac;   /* PAR max excluded DD fraction */
     double par_lock_factor;     /* PAR lock reset delay factor */
-    int par_max_pair_trials;    /* PAR max two-satellite trials (0:off) */
+    int par_max_pair_trials;    /* PAR max extra pair-stage LAMBDA calls (0:off) */
     int ionoopt;        /* ionosphere option (IONOOPT_???) */
     int tropopt;        /* troposphere option (TROPOPT_???) */
     int dynamics;       /* dynamics model (0:none,1:velocity,2:accel) */
