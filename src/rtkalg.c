@@ -303,6 +303,8 @@ static void select_sat_geom(rtk_t *rtk, const obsd_t *obs, double dt,
 #define PAR_MAX_DROP_FRAC_DEFAULT 0.50
 #define PAR_LOCK_FACTOR_DEFAULT 0.50
 #define PAR_EXCLUDE_WHOLE_SAT 1  /* 0:sat/freq PAR, 1:whole-satellite PAR */
+#define PAR_DIAG_MAX_CALLS 64
+#define PAR_DIAG_TOP_DD 6
 
 typedef struct {        /* PAR double-difference metadata */
     int refsat;
@@ -346,6 +348,26 @@ typedef struct {        /* scheduled PAR two-satellite trial */
     int refsat;
 } par_pair_trial_t;
 
+typedef struct {        /* PAR single-frequency DD exclusion candidate */
+    int dd_index;
+    int sat;
+    int freq;
+    int m;
+    int refsat;
+    int lock0;
+    int has_tdcp;
+    int group_size;
+    double qdiag;
+    double qnorm;
+    double tdcp;
+    double tnorm;
+    double rough;
+    double ratio;
+    double thres;
+    double score;
+    int score_valid;
+} par_freq_cand_t;
+
 typedef struct {        /* PAR trial state snapshot */
     uint8_t fix[MAXSAT][NFREQ];
     float ratio;
@@ -353,9 +375,19 @@ typedef struct {        /* PAR trial state snapshot */
     int nb_ar;
 } par_snapshot_t;
 
+typedef struct {        /* diagnostic score for removing one DD */
+    int dd_index;
+    double score;
+} par_diag_score_t;
+
 static int par_ratio_valid(double ratio)
 {
     return ratio==ratio&&ratio>0.0&&fabs(ratio)<1E99;
+}
+
+static int par_diag_trace_stage(const char *stage)
+{
+    return !strcmp(stage,"full")||!strncmp(stage,"diag-",5);
 }
 
 static int par_count_flags(const uint8_t flags[MAXSAT][NFREQ])
@@ -574,6 +606,9 @@ static int resamb_PAR(rtk_t *rtk, double *bias, double *xa, int gps, int glo,
     for (j=0;j<nb;j++) for (i=0;i<na;i++) {
         Qab[i+j*na]=rtk->P[i+ix[j*2]*nx]-rtk->P[i+ix[j*2+1]*nx];
     }
+    if (rtk->opt.ardiag&&!strcmp(stage,"full")) {
+        ar_diag_matrix(rtk,ix,nb,Qb,time,call_id,"par",stage);
+    }
 
     if (!(info=lambda(nb,2,y,Qb,b,s))) {
         rtk->sol.ratio=s[0]>0?(float)(s[1]/s[0]):0.0f;
@@ -595,6 +630,12 @@ static int resamb_PAR(rtk_t *rtk, double *bias, double *xa, int gps, int glo,
         }
         else {
             rtk->sol.thres=(float)opt->thresar[0];
+        }
+        if (rtk->opt.ardiag&&par_diag_trace_stage(stage)) {
+            trace(3,"AR diag lambda: time=%s solver=par id=%d stage=%s info=0 nb=%d ratio=%.9g thres=%.9g fixed=%d s0=%.9g s1=%.9g\n",
+                  time2str(time,tstr,3),call_id,stage,nb,rtk->sol.ratio,
+                  rtk->sol.thres,s[0]<=0.0||s[1]/s[0]>=rtk->sol.thres,
+                  s[0],s[1]);
         }
 
         if (s[0]<=0.0||s[1]/s[0]>=rtk->sol.thres) {
@@ -632,6 +673,11 @@ static int resamb_PAR(rtk_t *rtk, double *bias, double *xa, int gps, int glo,
         }
     }
     else {
+        if (rtk->opt.ardiag&&par_diag_trace_stage(stage)) {
+            trace(3,"AR diag lambda: time=%s solver=par id=%d stage=%s info=%d nb=%d ratio=0 thres=%.9g fixed=0 s0=0 s1=0\n",
+                  time2str(time,tstr,3),call_id,stage,info,nb,
+                  opt->thresar[0]);
+        }
         if (commit) errmsg(rtk,"PAR lambda error (info=%d)\n",info);
         nb=0;
     }
@@ -639,6 +685,131 @@ static int resamb_PAR(rtk_t *rtk, double *bias, double *xa, int gps, int glo,
     free(y); free(DP); free(b); free(db); free(Qb); free(Qab); free(QQ);
 
     return nb;
+}
+
+static int par_diag_probe(rtk_t *rtk, double *bias, double *xa, int gps,
+                          int glo, int sbs,
+                          const int refsat[6][NFREQ*2],
+                          const uint8_t excl[MAXSAT][NFREQ], gtime_t time,
+                          int *call_id, int *used, const char *mode, int m,
+                          int f, const par_dd_t *full_dd, int full_nb,
+                          int dd1, int dd2, double *score)
+{
+    par_snapshot_t snap;
+    double ratio,thres;
+    int nb,trial_nb,probe=*used+1,id1=dd1>=0&&dd1<full_nb?dd1:-1;
+    int id2=dd2>=0&&dd2<full_nb?dd2:-1;
+    const par_dd_t *a=id1>=0?full_dd+id1:NULL;
+    const par_dd_t *b=id2>=0?full_dd+id2:NULL;
+    char tstr[64];
+
+    if (*used>=PAR_DIAG_MAX_CALLS) return 0;
+    par_save_snapshot(rtk,&snap);
+    nb=resamb_PAR(rtk,bias,xa,gps,glo,sbs,refsat,excl,0,NULL,0,time,
+                  ++(*call_id),"diag-probe");
+    trial_nb=rtk->nb_ar;
+    ratio=rtk->sol.ratio;
+    thres=rtk->sol.thres;
+    *score=par_ratio_valid(ratio)&&thres>0.0?ratio/thres:-1.0;
+    (*used)++;
+    trace(3,"AR diag probe: time=%s probe=%d call_id=%d mode=%s m=%d f=%d dd1=%d ref1=%d sat1=%d f1=%d dd2=%d ref2=%d sat2=%d f2=%d flags=%d flaghash=%08X nb=%d ratio=%.9g thres=%.9g score=%.9g fixed=%d\n",
+          time2str(time,tstr,3),probe,*call_id,mode,m,f>=0?f+1:0,id1,
+          a?a->refsat:0,a?a->sat:0,a?a->freq+1:0,id2,b?b->refsat:0,
+          b?b->sat:0,b?b->freq+1:0,par_count_flags(excl),
+          par_flags_hash(excl),trial_nb,ratio,thres,*score,nb>1);
+    par_restore_snapshot(rtk,&snap);
+    return 1;
+}
+
+static void par_run_full_diagnostics(rtk_t *rtk, double *bias, double *xa,
+                                     int gps, int glo, int sbs,
+                                     const int refsat[6][NFREQ*2],
+                                     const par_dd_t *full_dd, int full_nb,
+                                     gtime_t time, int *call_id)
+{
+    uint8_t excl[MAXSAT][NFREQ]={{0}};
+    par_diag_score_t scores[MAXSAT*NFREQ];
+    par_snapshot_t full_snap;
+    int i,j,m,f,nf=NF(&rtk->opt),used=0,ngroup=0,nsingle=0,npair=0;
+    int nscore=0,topn,pair_reserve=PAR_DIAG_TOP_DD*(PAR_DIAG_TOP_DD-1)/2;
+    double score;
+    char tstr[64];
+
+    if (!rtk->opt.ardiag||nf<2||full_nb<=0) return;
+    par_save_snapshot(rtk,&full_snap);
+
+    for (i=0;i<full_nb;i++) {
+        if (full_dd[i].freq!=0) excl[full_dd[i].sat-1][full_dd[i].freq]=1;
+    }
+    if (par_count_flags(excl)>0&&used<PAR_DIAG_MAX_CALLS) {
+        par_diag_probe(rtk,bias,xa,gps,glo,sbs,refsat,excl,time,call_id,
+                       &used,"l1-only",-1,0,full_dd,full_nb,-1,-1,&score);
+    }
+    memset(excl,0,sizeof(excl));
+    for (i=0;i<full_nb;i++) {
+        if (full_dd[i].freq!=1) excl[full_dd[i].sat-1][full_dd[i].freq]=1;
+    }
+    if (par_count_flags(excl)>0&&used<PAR_DIAG_MAX_CALLS) {
+        par_diag_probe(rtk,bias,xa,gps,glo,sbs,refsat,excl,time,call_id,
+                       &used,"l2-only",-1,1,full_dd,full_nb,-1,-1,&score);
+    }
+
+    for (m=0;m<6&&used<PAR_DIAG_MAX_CALLS;m++) for (f=0;f<nf&&
+        used<PAR_DIAG_MAX_CALLS;f++) {
+        int n=0;
+
+        memset(excl,0,sizeof(excl));
+        for (i=0;i<full_nb;i++) {
+            if (full_dd[i].m!=m||full_dd[i].freq!=f) continue;
+            excl[full_dd[i].sat-1][f]=1;
+            n++;
+        }
+        if (!n) continue;
+        if (par_diag_probe(rtk,bias,xa,gps,glo,sbs,refsat,excl,time,
+                           call_id,&used,"drop-group",m,f,full_dd,full_nb,
+                           -1,-1,&score)) {
+            ngroup++;
+        }
+    }
+
+    for (i=0;i<full_nb&&used<PAR_DIAG_MAX_CALLS-pair_reserve;i++) {
+        memset(excl,0,sizeof(excl));
+        excl[full_dd[i].sat-1][full_dd[i].freq]=1;
+        if (!par_diag_probe(rtk,bias,xa,gps,glo,sbs,refsat,excl,time,
+                            call_id,&used,"drop-one-dd",full_dd[i].m,
+                            full_dd[i].freq,full_dd,full_nb,i,-1,&score)) {
+            break;
+        }
+        scores[nscore].dd_index=i;
+        scores[nscore++].score=score;
+        nsingle++;
+    }
+    for (i=1;i<nscore;i++) {
+        par_diag_score_t v=scores[i];
+
+        for (j=i;j>0&&scores[j-1].score<v.score;j--) scores[j]=scores[j-1];
+        scores[j]=v;
+    }
+    topn=MIN(nscore,PAR_DIAG_TOP_DD);
+    for (i=1;i<topn&&used<PAR_DIAG_MAX_CALLS;i++) for (j=0;j<i&&
+        used<PAR_DIAG_MAX_CALLS;j++) {
+        int d1=scores[j].dd_index,d2=scores[i].dd_index;
+
+        if (scores[j].score<0.0||scores[i].score<0.0) continue;
+        memset(excl,0,sizeof(excl));
+        excl[full_dd[d1].sat-1][full_dd[d1].freq]=1;
+        excl[full_dd[d2].sat-1][full_dd[d2].freq]=1;
+        if (par_count_flags(excl)<2) continue;
+        if (par_diag_probe(rtk,bias,xa,gps,glo,sbs,refsat,excl,time,
+                           call_id,&used,"drop-pair-dd",-1,-1,full_dd,
+                           full_nb,d1,d2,&score)) {
+            npair++;
+        }
+    }
+    par_restore_snapshot(rtk,&full_snap);
+    trace(3,"AR diag summary: time=%s calls=%d max=%d groups=%d singles=%d pairs=%d full_nb=%d restored_ratio=%.9g restored_thres=%.9g restored_nb=%d\n",
+          time2str(time,tstr,3),used,PAR_DIAG_MAX_CALLS,ngroup,nsingle,npair,
+          full_nb,rtk->sol.ratio,rtk->sol.thres,rtk->nb_ar);
 }
 
 static int par_build_sd(rtk_t *rtk, const obsd_t *obs, const int *sat,
@@ -801,6 +972,119 @@ static void par_sort_candidates(par_cand_t *cand, int n)
             cand[j+1]=tmp;
         }
     }
+}
+
+static int par_freq_rough_better(const par_freq_cand_t *cand, int a, int b)
+{
+    if (cand[a].rough!=cand[b].rough) return cand[a].rough>cand[b].rough;
+    if (cand[a].qdiag!=cand[b].qdiag) return cand[a].qdiag>cand[b].qdiag;
+    if (cand[a].lock0!=cand[b].lock0) return cand[a].lock0>cand[b].lock0;
+    return fabs(cand[a].tdcp)>fabs(cand[b].tdcp);
+}
+
+static void par_sort_freq_rough(const par_freq_cand_t *cand, int *order, int n)
+{
+    int i,j,key;
+
+    for (i=1;i<n;i++) {
+        key=order[i];
+        for (j=i;j>0&&par_freq_rough_better(cand,key,order[j-1]);j--) {
+            order[j]=order[j-1];
+        }
+        order[j]=key;
+    }
+}
+
+static void par_sort_freq_score(const par_freq_cand_t *cand, int *order, int n)
+{
+    int i,j,key;
+
+    for (i=1;i<n;i++) {
+        key=order[i];
+        for (j=i;j>0;j--) {
+            int prev=order[j-1],better;
+
+            if (cand[key].score_valid!=cand[prev].score_valid) {
+                better=cand[key].score_valid>cand[prev].score_valid;
+            }
+            else if (cand[key].score_valid&&cand[key].score!=cand[prev].score) {
+                better=cand[key].score>cand[prev].score;
+            }
+            else better=par_freq_rough_better(cand,key,prev);
+            if (!better) break;
+            order[j]=prev;
+        }
+        order[j]=key;
+    }
+}
+
+static int par_collect_freq_candidates(
+    const rtk_t *rtk, const par_dd_t *dd, int ndd,
+    const uint8_t par_excl[MAXSAT][NFREQ],
+    const double sd[MAXSAT][NFREQ],
+    const uint8_t valid[MAXSAT][NFREQ], int cache_ok,
+    par_freq_cand_t *cand)
+{
+    double qmin[6][NFREQ],qmax[6][NFREQ],tmax[6][NFREQ];
+    int group_size[6][NFREQ]={{0}};
+    int i,m,f,n=0;
+
+    for (m=0;m<6;m++) for (f=0;f<NFREQ;f++) {
+        qmin[m][f]=1E99;
+        qmax[m][f]=0.0;
+        tmax[m][f]=0.0;
+    }
+    for (i=0;i<ndd;i++) {
+        const par_dd_t *d=dd+i;
+        par_freq_cand_t *c;
+        double qdiag;
+
+        if (d->sat<1||d->sat>MAXSAT||d->freq<0||d->freq>=NFREQ||
+            d->m<0||d->m>=6||par_excl[d->sat-1][d->freq]) {
+            continue;
+        }
+        c=cand+n++;
+        qdiag=rtk->P[d->ib_ref+d->ib_ref*rtk->nx]+
+              rtk->P[d->ib_sat+d->ib_sat*rtk->nx]-
+              rtk->P[d->ib_ref+d->ib_sat*rtk->nx]-
+              rtk->P[d->ib_sat+d->ib_ref*rtk->nx];
+        if (!(qdiag==qdiag)||fabs(qdiag)>=1E99) qdiag=0.0;
+        if (qdiag<0.0) qdiag=0.0;
+        c->dd_index=i;
+        c->sat=d->sat;
+        c->freq=d->freq;
+        c->m=d->m;
+        c->refsat=d->refsat;
+        c->lock0=rtk->ssat[d->sat-1].lock[d->freq]==0;
+        c->has_tdcp=valid[d->sat-1][d->freq]&&
+                    valid[d->refsat-1][d->freq]&&cache_ok&&
+                    rtk->par_sd_valid[d->sat-1][d->freq]&&
+                    rtk->par_sd_valid[d->refsat-1][d->freq];
+        c->tdcp=c->has_tdcp?
+            (sd[d->sat-1][d->freq]-sd[d->refsat-1][d->freq])-
+            (rtk->par_sd[d->sat-1][d->freq]-
+             rtk->par_sd[d->refsat-1][d->freq]):0.0;
+        c->qdiag=qdiag;
+        c->qnorm=c->tnorm=c->rough=0.0;
+        c->ratio=c->thres=0.0;
+        c->score=-1.0;
+        c->score_valid=0;
+        group_size[d->m][d->freq]++;
+        qmin[d->m][d->freq]=MIN(qmin[d->m][d->freq],qdiag);
+        qmax[d->m][d->freq]=MAX(qmax[d->m][d->freq],qdiag);
+        tmax[d->m][d->freq]=MAX(tmax[d->m][d->freq],fabs(c->tdcp));
+    }
+    for (i=0;i<n;i++) {
+        par_freq_cand_t *c=cand+i;
+        double range=qmax[c->m][c->freq]-qmin[c->m][c->freq];
+
+        c->group_size=group_size[c->m][c->freq];
+        c->qnorm=range>0.0?(c->qdiag-qmin[c->m][c->freq])/range:0.0;
+        c->tnorm=tmax[c->m][c->freq]>0.0?
+                 fabs(c->tdcp)/tmax[c->m][c->freq]:0.0;
+        c->rough=c->qnorm+0.5*(c->lock0?1.0:0.0)+0.5*c->tnorm;
+    }
+    return n;
 }
 
 static int par_pair_rank_better(const par_cand_t *cand, int a, int b,
@@ -978,7 +1262,8 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
     int sys_count[6],sys_left[6],batch_sys[6];
     int i,m,nb,full_nb,ncand,sd_n,cache_ok,current_ratio_ok;
     int gps1=1,glo1,sbas1=0,drops=0,max_drop,total_left;
-    int min_total_dd,min_sys_dd,lock_count=0,max_pair_trials,ar_call_id=0;
+    int min_total_dd,min_sys_dd,lock_count=0,max_pair_trials,max_freq_trials;
+    int ar_call_id=0;
     int exclusion_generation=0;
     float posvar=0.0f;
 
@@ -1000,11 +1285,13 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
                rtk->opt.par_min_sys_dd:PAR_MIN_SYS_DD_DEFAULT;
     max_pair_trials=rtk->opt.par_max_pair_trials>=0?
                     rtk->opt.par_max_pair_trials:0;
+    max_freq_trials=rtk->opt.par_max_freq_trials>=0?
+                    rtk->opt.par_max_freq_trials:0;
 
-    trace(3,"manage_amb_PAR: posvar=%.6f prev_fix=%d refsel=%d ratio_factor=%.3f min_dd=%d min_sys_dd=%d max_drop=%.3f lock_factor=%.3f max_pair=%d\n",
+    trace(3,"manage_amb_PAR: posvar=%.6f prev_fix=%d refsel=%d ratio_factor=%.3f min_dd=%d min_sys_dd=%d max_drop=%.3f lock_factor=%.3f max_pair=%d max_freq=%d\n",
           posvar,previous_solution_fixed,rtk->opt.par_refsel==0?0:1,
           ratio_factor,min_total_dd,min_sys_dd,max_drop_frac,lock_factor,
-          max_pair_trials);
+          max_pair_trials,max_freq_trials);
     trace(3,"manage_amb_PAR: prevRatios= %.3f %.3f\n",
           rtk->sol.prev_ratio1,rtk->sol.prev_ratio2);
 
@@ -1040,6 +1327,8 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
               full_ratio,full_thres);
         return nb;
     }
+    par_run_full_diagnostics(rtk,bias,xa,gps1,glo1,sbas1,refsat,full_dd,
+                             full_nb,obs[0].time,&ar_call_id);
 
     cache_ok=rtk->par_sd_n>0&&
              fabs(timediff(obs[0].time,rtk->par_sd_time))<=PAR_TDCP_MAX_AGE;
@@ -1210,6 +1499,184 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
         par_restore_snapshot(rtk,&snap);
         trace(3,"PAR try restored sat=%d ratio=%.3f current=%.3f valid=%d\n",
               cand[i].sat,trial_ratio,current_ratio,current_ratio_ok);
+    }
+
+    if (max_freq_trials>=4&&nf>=2) {
+        par_freq_cand_t freq_cand[MAXSAT*NFREQ];
+        par_snapshot_t freq_base;
+        int rough_order[MAXSAT*NFREQ],score_order[MAXSAT*NFREQ];
+        int group_best[6*NFREQ],group_order_freq[6*NFREQ];
+        uint8_t chosen[MAXSAT*NFREQ]={0};
+        int freq_left[NFREQ]={0},prefix_sys[6]={0},prefix_freq[NFREQ]={0};
+        int nfreqcand,ngroup=0,nrough=0,nscore=0,freq_calls=0;
+        int prefix_target,prefix_limit,added=0,best_prefix=0,best_nb=0;
+        double best_margin=-1.0,best_ratio=0.0,best_thres=0.0;
+        int k;
+
+        nfreqcand=par_collect_freq_candidates(rtk,full_dd,full_nb,par_excl,
+                                               sd,sd_valid,cache_ok,
+                                               freq_cand);
+        for (i=0;i<6*NFREQ;i++) group_best[i]=-1;
+        for (i=0;i<nfreqcand;i++) {
+            int group=freq_cand[i].m*NFREQ+freq_cand[i].freq;
+
+            if (drops+1>max_drop||total_left-1<=min_total_dd||
+                sys_left[freq_cand[i].m]-1<=min_sys_dd) {
+                continue;
+            }
+            rough_order[nrough++]=i;
+            if (group_best[group]<0||
+                par_freq_rough_better(freq_cand,i,group_best[group])) {
+                group_best[group]=i;
+            }
+        }
+        par_sort_freq_rough(freq_cand,rough_order,nrough);
+        for (i=0;i<6*NFREQ;i++) {
+            if (group_best[i]>=0) group_order_freq[ngroup++]=group_best[i];
+        }
+        par_sort_freq_rough(freq_cand,group_order_freq,ngroup);
+
+        prefix_target=MIN(8,(max_freq_trials-1)/3);
+        for (i=0;i<ngroup&&nscore<max_freq_trials-1-prefix_target;i++) {
+            int index=group_order_freq[i];
+
+            score_order[nscore++]=index;
+            chosen[index]=1;
+        }
+        for (i=0;i<nrough&&nscore<max_freq_trials-1-prefix_target;i++) {
+            int index=rough_order[i];
+
+            if (chosen[index]) continue;
+            score_order[nscore++]=index;
+            chosen[index]=1;
+        }
+        for (i=0;i<full_nb;i++) {
+            if (!par_excl[full_dd[i].sat-1][full_dd[i].freq]) {
+                freq_left[full_dd[i].freq]++;
+            }
+        }
+        trace(3,"PAR freq queue: candidates=%d eligible=%d groups=%d score_budget=%d prefix_target=%d budget=%d reserve_commit=1\n",
+              nfreqcand,nrough,ngroup,nscore,prefix_target,max_freq_trials);
+
+        rtk->sol.ratio=(float)current_ratio;
+        rtk->sol.thres=(float)current_thres;
+        par_save_snapshot(rtk,&freq_base);
+        for (i=0;i<nscore;i++) {
+            par_freq_cand_t *c=freq_cand+score_order[i];
+            int trial_nb;
+
+            par_excl[c->sat-1][c->freq]=1;
+            nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,refsat,par_excl,0,
+                          NULL,0,obs[0].time,++ar_call_id,"freq-score");
+            freq_calls++;
+            trial_nb=rtk->nb_ar;
+            c->ratio=rtk->sol.ratio;
+            c->thres=rtk->sol.thres;
+            c->score_valid=par_ratio_valid(c->ratio)&&c->thres>0.0;
+            c->score=c->score_valid?c->ratio/c->thres:-1.0;
+            trace(3,"PAR freq score: rank=%d dd=%d sat=%d m=%d f=%d ref=%d group=%d lock0=%d tdcp_valid=%d tdcp=%.4f qdiag=%.9g qnorm=%.6f tnorm=%.6f rough=%.6f nb=%d ratio=%.3f thres=%.3f score=%.6f budget_used=%d budget_left=%d fixed=%d\n",
+                  i+1,c->dd_index,c->sat,c->m,c->freq+1,c->refsat,c->group_size,
+                  c->lock0,c->has_tdcp,c->tdcp,c->qdiag,c->qnorm,c->tnorm,
+                  c->rough,trial_nb,c->ratio,c->thres,c->score,freq_calls,
+                  max_freq_trials-freq_calls,nb>1);
+            par_excl[c->sat-1][c->freq]=0;
+            par_restore_snapshot(rtk,&freq_base);
+        }
+        par_sort_freq_score(freq_cand,score_order,nscore);
+        prefix_limit=MIN(MIN(8,nscore),max_freq_trials-1-freq_calls);
+        for (k=0;k<prefix_limit;k++) {
+            par_freq_cand_t *c=freq_cand+score_order[k];
+            double trial_ratio,trial_thres,margin=-1.0;
+            int trial_nb,allowed=1;
+
+            par_excl[c->sat-1][c->freq]=1;
+            added++;
+            prefix_sys[c->m]++;
+            prefix_freq[c->freq]++;
+            if (drops+added>max_drop||total_left-added<=min_total_dd) {
+                allowed=0;
+            }
+            for (m=0;m<6&&allowed;m++) {
+                if (prefix_sys[m]>0&&
+                    sys_left[m]-prefix_sys[m]<=min_sys_dd) allowed=0;
+            }
+            if (freq_left[0]-prefix_freq[0]<=0||
+                freq_left[1]-prefix_freq[1]<=0) allowed=0;
+            if (!allowed) {
+                trace(3,"PAR freq prefix: prefix=%d action=constraint-stop drops=%d total_left=%d f1_left=%d f2_left=%d\n",
+                      added,drops,total_left,freq_left[0]-prefix_freq[0],
+                      freq_left[1]-prefix_freq[1]);
+                break;
+            }
+            nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,refsat,par_excl,0,
+                          NULL,0,obs[0].time,++ar_call_id,"freq-prefix");
+            freq_calls++;
+            trial_nb=rtk->nb_ar;
+            trial_ratio=rtk->sol.ratio;
+            trial_thres=rtk->sol.thres;
+            if (par_ratio_valid(trial_ratio)&&trial_thres>0.0) {
+                margin=trial_ratio/trial_thres;
+            }
+            else if (nb>1) margin=0.0;
+            trace(3,"PAR freq prefix: prefix=%d sat=%d f=%d nb=%d ratio=%.3f thres=%.3f margin=%.6f budget_used=%d budget_left=%d action=%s\n",
+                  added,c->sat,c->freq+1,trial_nb,trial_ratio,trial_thres,
+                  margin,freq_calls,max_freq_trials-freq_calls,
+                  nb>1?"fixed":"restored");
+            if (nb>1&&margin>best_margin) {
+                best_margin=margin;
+                best_ratio=trial_ratio;
+                best_thres=trial_thres;
+                best_prefix=added;
+                best_nb=trial_nb;
+            }
+            par_restore_snapshot(rtk,&freq_base);
+        }
+        for (i=0;i<added;i++) {
+            par_freq_cand_t *c=freq_cand+score_order[i];
+
+            par_excl[c->sat-1][c->freq]=0;
+        }
+        par_restore_snapshot(rtk,&freq_base);
+        if (best_prefix>0&&freq_calls<max_freq_trials) {
+            for (i=0;i<best_prefix;i++) {
+                par_freq_cand_t *c=freq_cand+score_order[i];
+
+                par_excl[c->sat-1][c->freq]=1;
+            }
+            nb=resamb_PAR(rtk,bias,xa,gps1,glo1,sbas1,refsat,par_excl,1,
+                          NULL,0,obs[0].time,++ar_call_id,"freq-commit");
+            freq_calls++;
+            if (nb>1) {
+                for (i=0;i<best_prefix;i++) {
+                    par_freq_cand_t *c=freq_cand+score_order[i];
+
+                    lock_reset_nb[c->sat-1][c->freq]=best_nb;
+                }
+                drops+=best_prefix;
+                par_store_sd_cache(rtk,obs[0].time,sd,sd_valid);
+                lock_count=par_apply_lock_reset(rtk,lock_reset_nb,
+                                                lock_factor);
+                rtk->sol.prev_ratio1=(float)full_ratio;
+                rtk->sol.prev_ratio2=rtk->sol.ratio;
+                trace(3,"PAR freq result: fixed calls=%d budget=%d prefix=%d trial_ratio=%.3f trial_thres=%.3f commit_ratio=%.3f excl=%d lock_reset=%d\n",
+                      freq_calls,max_freq_trials,best_prefix,best_ratio,
+                      best_thres,rtk->sol.ratio,par_count_flags(par_excl),
+                      lock_count);
+                return nb;
+            }
+            for (i=0;i<best_prefix;i++) {
+                par_freq_cand_t *c=freq_cand+score_order[i];
+
+                par_excl[c->sat-1][c->freq]=0;
+            }
+            par_restore_snapshot(rtk,&freq_base);
+            trace(3,"PAR freq result: commit-failed calls=%d budget=%d prefix=%d\n",
+                  freq_calls,max_freq_trials,best_prefix);
+        }
+        else {
+            trace(3,"PAR freq result: no-fix calls=%d budget=%d scored=%d prefixes=%d\n",
+                  freq_calls,max_freq_trials,nscore,added);
+        }
     }
 
     if (max_pair_trials>0) {

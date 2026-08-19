@@ -1588,6 +1588,97 @@ static unsigned int ar_dd_hash(const int *ix, int nb)
     }
     return hash;
 }
+static int ar_diag_sys_group(int sys)
+{
+    if (sys&(SYS_GPS|SYS_SBS)) return 0;
+    if (sys&SYS_GLO) return 1;
+    if (sys&SYS_GAL) return 2;
+    if (sys&SYS_CMP) return 3;
+    if (sys&SYS_QZS) return 4;
+    if (sys&SYS_IRN) return 5;
+    return -1;
+}
+static void ar_diag_stats(double *v, int n, double *vmin, double *vmed,
+                          double *vp95, double *vmax)
+{
+    int i,j,p95;
+    double t;
+
+    if (n<=0) {
+        *vmin=*vmed=*vp95=*vmax=0.0;
+        return;
+    }
+    for (i=1;i<n;i++) {
+        t=v[i];
+        for (j=i;j>0&&v[j-1]>t;j--) v[j]=v[j-1];
+        v[j]=t;
+    }
+    p95=(95*n+99)/100-1;
+    *vmin=v[0];
+    *vmed=n%2?v[n/2]:(v[n/2-1]+v[n/2])*0.5;
+    *vp95=v[p95];
+    *vmax=v[n-1];
+}
+static void ar_diag_matrix(rtk_t *rtk, const int *ix, int nb,
+                           const double *Qb, gtime_t time, int call_id,
+                           const char *solver, const char *stage)
+{
+    unsigned int hash[6][NFREQ];
+    int count[6][NFREQ]={{0}},ref[6][NFREQ]={{0}};
+    int i,j,m,f,ref_sat,sat,ncorr=0,group_total=0,na=rtk->na;
+    double *diag,vmin,vmed,vp95,vmax,corr,corr_sum=0.0,corr_max=0.0;
+    char tstr[64];
+
+    if (!rtk->opt.ardiag||nb<=0) return;
+    diag=mat(nb,1);
+    for (m=0;m<6;m++) for (f=0;f<NFREQ;f++) {
+        hash[m][f]=2166136261u;
+    }
+    for (i=0;i<nb;i++) {
+        int ib_ref=ix[i*2],ib_sat=ix[i*2+1];
+
+        diag[i]=Qb[i+i*nb];
+        f=(ib_sat-na)/MAXSAT;
+        sat=(ib_sat-na)%MAXSAT+1;
+        ref_sat=(ib_ref-na)%MAXSAT+1;
+        m=sat>=1&&sat<=MAXSAT?ar_diag_sys_group(rtk->ssat[sat-1].sys):-1;
+        if (m<0||f<0||f>=NFREQ) continue;
+        count[m][f]++;
+        if (!ref[m][f]) ref[m][f]=ref_sat;
+        hash[m][f]^=(unsigned int)(ib_ref+1);
+        hash[m][f]*=16777619u;
+        hash[m][f]^=(unsigned int)(ib_sat+1);
+        hash[m][f]*=16777619u;
+        trace(3,"AR diag dd: time=%s solver=%s id=%d stage=%s order=%d m=%d f=%d ref=%d sat=%d ib_ref=%d ib_sat=%d qdiag=%.9g\n",
+              time2str(time,tstr,3),solver,call_id,stage,i+1,m,f+1,
+              ref_sat,sat,ib_ref,ib_sat,diag[i]);
+    }
+    for (i=0;i<nb;i++) for (j=i+1;j<nb;j++) {
+        double d=diag[i]*diag[j];
+
+        if (d<=0.0) continue;
+        corr=fabs(Qb[i+j*nb])/sqrt(d);
+        corr_sum+=corr;
+        if (corr>corr_max) corr_max=corr;
+        ncorr++;
+    }
+    ar_diag_stats(diag,nb,&vmin,&vmed,&vp95,&vmax);
+    trace(3,"AR diag matrix: time=%s solver=%s id=%d stage=%s refsel=%d nb=%d ddhash=%08X qdiag_min=%.9g qdiag_median=%.9g qdiag_p95=%.9g qdiag_max=%.9g corr_mean=%.9g corr_max=%.9g\n",
+          time2str(time,tstr,3),solver,call_id,stage,
+          !strcmp(solver,"par")?(rtk->opt.par_refsel==0?0:1):-1,nb,
+          ar_dd_hash(ix,nb),vmin,vmed,vp95,vmax,
+          ncorr>0?corr_sum/ncorr:0.0,corr_max);
+    for (m=0;m<6;m++) for (f=0;f<NFREQ;f++) {
+        if (!count[m][f]) continue;
+        group_total+=count[m][f];
+        trace(3,"AR diag group: time=%s solver=%s id=%d stage=%s m=%d f=%d ref=%d nb=%d ddhash=%08X\n",
+              time2str(time,tstr,3),solver,call_id,stage,m,f+1,
+              ref[m][f],count[m][f],hash[m][f]);
+    }
+    trace(3,"AR diag groups: time=%s solver=%s id=%d stage=%s total=%d expected=%d\n",
+          time2str(time,tstr,3),solver,call_id,stage,group_total,nb);
+    free(diag);
+}
 /* index for single to double-difference transformation matrix (D') --------------------*/
 static int ddidx(rtk_t *rtk, int *ix, int gps, int glo, int sbs)
 {
@@ -1853,6 +1944,9 @@ static int resamb_LAMBDA(rtk_t *rtk, double *bias, double *xa, int gps,
     for (j=0;j<nb;j++) for (i=0;i<na;i++) {
         Qab[i+j*na]=rtk->P[i+ix[j*2]*nx]-rtk->P[i+ix[j*2+1]*nx];
     }
+    if (rtk->opt.ardiag&&!strcmp(stage,"full")) {
+        ar_diag_matrix(rtk,ix,nb,Qb,time,call_id,"original",stage);
+    }
 
 #ifdef TRACE
     double QQb[MAXSAT];
@@ -1888,6 +1982,12 @@ static int resamb_LAMBDA(rtk_t *rtk, double *bias, double *xa, int gps,
             rtk->sol.thres = MIN(MAX(rtk->sol.thres,opt->thresar[5]),opt->thresar[6]);
         } else
             rtk->sol.thres=(float)opt->thresar[0];
+        if (rtk->opt.ardiag&&!strcmp(stage,"full")) {
+            trace(3,"AR diag lambda: time=%s solver=original id=%d stage=%s info=0 nb=%d ratio=%.9g thres=%.9g fixed=%d s0=%.9g s1=%.9g\n",
+                  time2str(time,tstr,3),call_id,stage,nb,rtk->sol.ratio,
+                  rtk->sol.thres,s[0]<=0.0||s[1]/s[0]>=rtk->sol.thres,
+                  s[0],s[1]);
+        }
         /* validation by popular ratio-test of residuals*/
         if (s[0]<=0.0||s[1]/s[0]>=rtk->sol.thres) {
 
@@ -1930,6 +2030,11 @@ static int resamb_LAMBDA(rtk_t *rtk, double *bias, double *xa, int gps,
         }
     }
     else {
+        if (rtk->opt.ardiag&&!strcmp(stage,"full")) {
+            trace(3,"AR diag lambda: time=%s solver=original id=%d stage=%s info=%d nb=%d ratio=0 thres=%.9g fixed=0 s0=0 s1=0\n",
+                  time2str(time,tstr,3),call_id,stage,info,nb,
+                  opt->thresar[0]);
+        }
         errmsg(rtk,"lambda error (info=%d)\n",info);
         nb=0;
     }

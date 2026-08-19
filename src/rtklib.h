@@ -1054,6 +1054,7 @@ typedef struct {        /* processing options type */
     int bdsmodear;      /* BeiDou AR mode (0:off,1:on) */
     int arfilter;       /* AR filtering to reject bad sats (0:off,1:on) */
     int arsolver;       /* AR solver (0:original,1:PAR) */
+    int ardiag;         /* AR diagnostic probes (0:off,1:on) */
     int maxout;         /* obs outage count to reset bias */
     int minlock;        /* min lock count to fix ambiguity */
     int minfixsats;     /* min sats to fix integer ambiguities */
@@ -1068,6 +1069,7 @@ typedef struct {        /* processing options type */
     double par_max_drop_frac;   /* PAR max excluded DD fraction */
     double par_lock_factor;     /* PAR lock reset delay factor */
     int par_max_pair_trials;    /* PAR max extra pair-stage LAMBDA calls (0:off) */
+    int par_max_freq_trials;    /* PAR max frequency-stage LAMBDA calls (0:off) */
     int ionoopt;        /* ionosphere option (IONOOPT_???) */
     int tropopt;        /* troposphere option (TROPOPT_???) */
     int dynamics;       /* dynamics model (0:none,1:velocity,2:accel) */
