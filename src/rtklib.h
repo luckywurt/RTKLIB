@@ -1066,6 +1066,7 @@ typedef struct {        /* processing options type */
     double par_ratio_factor;    /* PAR ratio improvement factor */
     int par_min_total_dd;       /* PAR min total DD count */
     int par_min_sys_dd;         /* PAR min DD count per system */
+    int par_batch_min_sys_dd;   /* PAR batch min system DD (0:inherit) */
     double par_max_drop_frac;   /* PAR max excluded DD fraction */
     double par_lock_factor;     /* PAR lock reset delay factor */
     int par_max_pair_trials;    /* PAR max extra pair-stage LAMBDA calls (0:off) */

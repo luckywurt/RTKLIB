@@ -117,6 +117,7 @@ EXPORT opt_t sysopts[]={
     {"pos2-par-ratiofactor",1,(void *)&prcopt_.par_ratio_factor,""},
     {"pos2-par-mintotaldd",0,(void *)&prcopt_.par_min_total_dd,""},
     {"pos2-par-minsysdd",0,(void *)&prcopt_.par_min_sys_dd,""},
+    {"pos2-par-batchminsysdd",0,(void *)&prcopt_.par_batch_min_sys_dd,""},
     {"pos2-par-maxdropfrac",1,(void *)&prcopt_.par_max_drop_frac,""},
     {"pos2-par-lockfactor",1,(void *)&prcopt_.par_lock_factor,""},
     {"pos2-par-maxpairtrials",0,(void *)&prcopt_.par_max_pair_trials,""},

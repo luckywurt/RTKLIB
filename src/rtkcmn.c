@@ -208,7 +208,7 @@ const prcopt_t prcopt_default={ /* defaults processing options */
     0,3,3,1,0,1,0,0,            /* sateph,modear,glomodear,gpsmodear,bdsmodear,arfilter,arsolver,ardiag */
     20,0,4,5,10,20,             /* maxout,minlock,minfixsats,minholdsats,mindropsats,minfix */
     1,                           /* armaxiter */
-    1,1.5,12,3,0.50,0.50,0,0,   /* PAR options */
+    1,1.5,12,3,0,0.50,0.50,0,0, /* PAR options */
     1,1,1,0,                    /* estion,esttrop,dynamics,tidecorr */
     1,0,0,0,0,                  /* niter,codesmooth,intpref,sbascorr,sbassatsel */
     0,0,                        /* rovpos,refpos */

@@ -1262,7 +1262,8 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
     int sys_count[6],sys_left[6],batch_sys[6];
     int i,m,nb,full_nb,ncand,sd_n,cache_ok,current_ratio_ok;
     int gps1=1,glo1,sbas1=0,drops=0,max_drop,total_left;
-    int min_total_dd,min_sys_dd,lock_count=0,max_pair_trials,max_freq_trials;
+    int min_total_dd,min_sys_dd,batch_min_sys_dd,lock_count=0;
+    int max_pair_trials,max_freq_trials;
     int ar_call_id=0;
     int exclusion_generation=0;
     float posvar=0.0f;
@@ -1283,15 +1284,17 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
                  rtk->opt.par_min_total_dd:PAR_MIN_TOTAL_DD_DEFAULT;
     min_sys_dd=rtk->opt.par_min_sys_dd>=0?
                rtk->opt.par_min_sys_dd:PAR_MIN_SYS_DD_DEFAULT;
+    batch_min_sys_dd=rtk->opt.par_batch_min_sys_dd>0?
+                     rtk->opt.par_batch_min_sys_dd:min_sys_dd;
     max_pair_trials=rtk->opt.par_max_pair_trials>=0?
                     rtk->opt.par_max_pair_trials:0;
     max_freq_trials=rtk->opt.par_max_freq_trials>=0?
                     rtk->opt.par_max_freq_trials:0;
 
-    trace(3,"manage_amb_PAR: posvar=%.6f prev_fix=%d refsel=%d ratio_factor=%.3f min_dd=%d min_sys_dd=%d max_drop=%.3f lock_factor=%.3f max_pair=%d max_freq=%d\n",
+    trace(3,"manage_amb_PAR: posvar=%.6f prev_fix=%d refsel=%d ratio_factor=%.3f min_dd=%d min_sys_dd=%d batch_min_sys_dd=%d max_drop=%.3f lock_factor=%.3f max_pair=%d max_freq=%d\n",
           posvar,previous_solution_fixed,rtk->opt.par_refsel==0?0:1,
-          ratio_factor,min_total_dd,min_sys_dd,max_drop_frac,lock_factor,
-          max_pair_trials,max_freq_trials);
+          ratio_factor,min_total_dd,min_sys_dd,batch_min_sys_dd,max_drop_frac,
+          lock_factor,max_pair_trials,max_freq_trials);
     trace(3,"manage_amb_PAR: prevRatios= %.3f %.3f\n",
           rtk->sol.prev_ratio1,rtk->sol.prev_ratio2);
 
@@ -1368,7 +1371,8 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
                      total_left-batch_dd>min_total_dd;
 
         for (m=0;m<6&&batch_ok;m++) {
-            if (batch_sys[m]>0&&sys_left[m]-batch_sys[m]<=min_sys_dd) {
+            if (batch_sys[m]>0&&
+                sys_left[m]-batch_sys[m]<=batch_min_sys_dd) {
                 batch_ok=0;
             }
         }
