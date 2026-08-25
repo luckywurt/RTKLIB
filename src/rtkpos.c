@@ -1649,9 +1649,12 @@ static void ar_diag_matrix(rtk_t *rtk, const int *ix, int nb,
         hash[m][f]*=16777619u;
         hash[m][f]^=(unsigned int)(ib_sat+1);
         hash[m][f]*=16777619u;
-        trace(3,"AR diag dd: time=%s solver=%s id=%d stage=%s order=%d m=%d f=%d ref=%d sat=%d ib_ref=%d ib_sat=%d qdiag=%.9g\n",
+        trace(3,"AR diag dd: time=%s solver=%s id=%d stage=%s order=%d m=%d f=%d ref=%d sat=%d ib_ref=%d ib_sat=%d ref_lock=%d sat_lock=%d ref_slip=%d sat_slip=%d qdiag=%.9g\n",
               time2str(time,tstr,3),solver,call_id,stage,i+1,m,f+1,
-              ref_sat,sat,ib_ref,ib_sat,diag[i]);
+              ref_sat,sat,ib_ref,ib_sat,rtk->ssat[ref_sat-1].lock[f],
+              rtk->ssat[sat-1].lock[f],
+              rtk->ssat[ref_sat-1].slip[f]&(LLI_SLIP|LLI_HALFC),
+              rtk->ssat[sat-1].slip[f]&(LLI_SLIP|LLI_HALFC),diag[i]);
     }
     for (i=0;i<nb;i++) for (j=i+1;j<nb;j++) {
         double d=diag[i]*diag[j];
@@ -2245,6 +2248,7 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
     int info,refsat[6][NFREQ*2]={{0}},vflg[MAXOBS*NFREQ*2+1],svh[MAXOBS*2];
     int stat=rtk->opt.mode<=PMODE_DGPS?SOLQ_DGPS:SOLQ_FLOAT;
     int nf=opt->ionoopt==IONOOPT_IFLC?1:opt->nf;
+    char tstr[64];
 
     trace(3,"relpos  : nu=%d nr=%d\n",nu,nr);
 
@@ -2504,8 +2508,14 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
         if (rtk->ssat[i].slip[j]&LLI_SLIP) rtk->ssat[i].slipc[j]++;
         /* Inc lock count if this sat used for good fix */
         if (!rtk->ssat[i].vsat[j]) continue;
-        if (rtk->ssat[i].lock[j]<0||(rtk->nfix>0&&rtk->ssat[i].fix[j]>=2))
+        if (rtk->ssat[i].lock[j]<0||(rtk->nfix>0&&rtk->ssat[i].fix[j]>=2)) {
+            if (opt->ardiag&&opt->arsolver==1&&rtk->ssat[i].lock[j]<0) {
+                trace(3,"AR diag lock advance: time=%s sat=%d f=%d old=%d new=%d\n",
+                      time2str(time,tstr,3),i+1,j+1,rtk->ssat[i].lock[j],
+                      rtk->ssat[i].lock[j]+1);
+            }
             rtk->ssat[i].lock[j]++;
+        }
     }
     free(rs); free(dts); free(var); free(y); free(e); free(azel); free(freq);
     free(xp); free(Pp);  free(xa);  free(v); free(H); free(R); free(bias);

@@ -68,6 +68,7 @@ static void select_sat_geom(rtk_t *rtk, const obsd_t *obs, double dt,
     prcopt_t *opt=&rtk->opt;
     double dr[3],bl=baseline(x,rtk->rb,dr);
     int m,frq,i,j,k,q,n,sys,prev,badprev,f2=0;
+    char tstr[64];
 
     for (m=0;m<6;m++) for (frq=0;frq<NFREQ*2;frq++) refsat[m][frq]=0;
     for (m=0;m<6;m++) for (frq=0;frq<NFREQ;frq++) {
@@ -284,6 +285,13 @@ static void select_sat_geom(rtk_t *rtk, const obsd_t *obs, double dt,
         rtk->refsat[m][frq]=sat[best];
         rtk->refsat_bad[m][frq]=0;
         refsat[m][frq]=refsat[m][frq+nf]=sat[best];
+        if (rtk->opt.ardiag) {
+            trace(3,"AR diag ref select: time=%s mode=geometry m=%d f=%d sat=%d lock=%d slip=%d degraded=%d kept=%d\n",
+                  time2str(obs[0].time,tstr,3),m,frq+1,sat[best],
+                  rtk->ssat[sat[best]-1].lock[frq],
+                  rtk->ssat[sat[best]-1].slip[frq]&
+                  (LLI_SLIP|LLI_HALFC),best_degraded,kept_prev);
+        }
         if (best_degraded) {
             trace(3,"refsat geom: sys=%d frq=%d sat=%d ndd=%d degraded\n",m,frq+1,sat[best],best_ndd);
         }
@@ -387,7 +395,8 @@ static int par_ratio_valid(double ratio)
 
 static int par_diag_trace_stage(const char *stage)
 {
-    return !strcmp(stage,"full")||!strncmp(stage,"diag-",5);
+    return !strcmp(stage,"full")||!strncmp(stage,"batch-",6)||
+           !strncmp(stage,"diag-",5);
 }
 
 static int par_count_flags(const uint8_t flags[MAXSAT][NFREQ])
@@ -606,7 +615,7 @@ static int resamb_PAR(rtk_t *rtk, double *bias, double *xa, int gps, int glo,
     for (j=0;j<nb;j++) for (i=0;i<na;i++) {
         Qab[i+j*na]=rtk->P[i+ix[j*2]*nx]-rtk->P[i+ix[j*2+1]*nx];
     }
-    if (rtk->opt.ardiag&&!strcmp(stage,"full")) {
+    if (rtk->opt.ardiag&&par_diag_trace_stage(stage)) {
         ar_diag_matrix(rtk,ix,nb,Qb,time,call_id,"par",stage);
     }
 
@@ -1267,6 +1276,7 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
     int ar_call_id=0;
     int exclusion_generation=0;
     float posvar=0.0f;
+    char tstr[64];
 
     for (i=0;i<3;i++) posvar+=(float)rtk->P[i+i*rtk->nx];
     posvar/=3.0f;
@@ -1367,13 +1377,39 @@ static int manage_amb_PAR(rtk_t *rtk, const obsd_t *obs, const int *sat,
     if (previous_solution_fixed&&full_nb>min_total_dd) {
         int batch_dd=par_collect_new_excl(rtk,full_dd,full_nb,batch_excl,
                                           batch_sys);
-        int batch_ok=batch_dd>0&&batch_dd<=max_drop&&
-                     total_left-batch_dd>min_total_dd;
+        int drop_ok=batch_dd>0&&batch_dd<=max_drop;
+        int total_ok=total_left-batch_dd>min_total_dd;
+        int sys_ok=1;
+        int batch_ok;
 
-        for (m=0;m<6&&batch_ok;m++) {
+        for (m=0;m<6;m++) {
             if (batch_sys[m]>0&&
                 sys_left[m]-batch_sys[m]<=batch_min_sys_dd) {
-                batch_ok=0;
+                sys_ok=0;
+            }
+        }
+        batch_ok=drop_ok&&total_ok&&sys_ok;
+        if (rtk->opt.ardiag&&batch_dd>0) {
+            trace(3,"AR diag batch: time=%s full_nb=%d batch_dd=%d total_after=%d min_total=%d max_drop=%d drop_ok=%d total_ok=%d sys_ok=%d allowed=%d\n",
+                  time2str(obs[0].time,tstr,3),full_nb,batch_dd,
+                  total_left-batch_dd,min_total_dd,max_drop,drop_ok,total_ok,
+                  sys_ok,batch_ok);
+            for (m=0;m<6;m++) {
+                if (sys_left[m]<=0&&batch_sys[m]<=0) continue;
+                trace(3,"AR diag batch sys: time=%s m=%d before=%d drop=%d after=%d min_sys=%d allowed=%d\n",
+                      time2str(obs[0].time,tstr,3),m,sys_left[m],
+                      batch_sys[m],sys_left[m]-batch_sys[m],
+                      batch_min_sys_dd,batch_sys[m]<=0||
+                      sys_left[m]-batch_sys[m]>batch_min_sys_dd);
+            }
+            for (i=0;i<full_nb;i++) {
+                const par_dd_t *d=full_dd+i;
+
+                if (!batch_excl[d->sat-1][d->freq]) continue;
+                trace(3,"AR diag batch member: time=%s order=%d m=%d f=%d ref=%d sat=%d ref_lock=%d sat_lock=%d\n",
+                      time2str(obs[0].time,tstr,3),i+1,d->m,d->freq+1,
+                      d->refsat,d->sat,rtk->ssat[d->refsat-1].lock[d->freq],
+                      rtk->ssat[d->sat-1].lock[d->freq]);
             }
         }
         if (batch_ok) {
