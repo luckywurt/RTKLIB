@@ -232,7 +232,7 @@ static int flushobuf(raw_t *raw)
         raw->obuf.data[i].time=time0;
         for (j=0;j<NFREQ+NEXOBS;j++) {
             raw->obuf.data[i].L[j]=raw->obuf.data[i].P[j]=0.0;
-            raw->obuf.data[i].D[j]=raw->obuf.data[i].SNR[j]=0.0;
+            raw->obuf.data[i].D[j]=raw->obuf.data[i].SNR[j]=0.0f;
             raw->obuf.data[i].LLI[j]=0;
             raw->obuf.data[i].code[j]=CODE_NONE;
         }
@@ -943,7 +943,7 @@ static int decode_L2nav(uint8_t *buff, int len, int sat, raw_t *raw)
     alert =getbitu(msg,i, 1); i+= 1;
     
     if (preamb!=PREAMB_CNAV) {
-        trace(2,"javad *d sat=%2d L2 CNAV preamble error preamb=%02X\n",preamb);
+        trace(2,"javad L2nav sat=%2d L2 CNAV preamble error preamb=%02X\n",sat,preamb);
         return -1;
     }
     trace(3,"L2CNAV: sat=%2d prn=%2d msgid=%2d tow=%6d alert=%d\n",sat,prn,
@@ -971,7 +971,7 @@ static int decode_L5nav(uint8_t *buff, int len, int sat, raw_t *raw)
     alert =getbitu(msg,i, 1); i+= 1;
     
     if (preamb!=PREAMB_CNAV) {
-        trace(2,"javad *d sat=%2d L5 CNAV preamble error preamb=%02X\n",preamb);
+        trace(2,"javad L5nav sat=%2d L5 CNAV preamble error preamb=%02X\n",sat,preamb);
         return -1;
     }
     trace(3,"L5CNAV: sat=%2d prn=%2d msgid=%2d tow=%6d alert=%d\n",sat,prn,
@@ -1581,7 +1581,7 @@ static int decode_Ex(raw_t *raw, char sig)
         
         if ((idx=checkpri(sys,code,raw->opt,idx))>=0) {
             if (!settag(raw->obuf.data+i,raw->time)) continue;
-            raw->obuf.data[i].SNR[idx]=cnr;
+            raw->obuf.data[i].SNR[idx]=(float)cnr;
         }
     }
     return 0;
@@ -1612,7 +1612,7 @@ static int decode_xE(raw_t *raw, char sig)
         
         if ((idx=checkpri(sys,code,raw->opt,idx))>=0) {
             if (!settag(raw->obuf.data+i,raw->time)) continue;
-            raw->obuf.data[i].SNR[idx]=cnr*0.25;
+            raw->obuf.data[i].SNR[idx]=(float)(cnr*0.25);
         }
     }
     return 0;

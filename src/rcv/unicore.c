@@ -219,18 +219,18 @@ static int sig2code(int sys, int sigtype, int l2c)
 
 static int decode_track_stat(uint32_t stat, int* sys, int* code, int* plock, int* clock)
 {
-    int satsys, sigtype, idx = -1;
+    int sigtype, idx = -1;
     int l2c;
 
     *code = CODE_NONE;
     *plock = (stat >> 10) & 1;
     *clock = (stat >> 12) & 1;
-    satsys = (stat >> 16) & 7;
+    unsigned sysno = (stat >> 16) & 7;
     sigtype = (stat >> 21) & 0x1F;
     l2c = (stat >> 26) & 0x01;
 
 
-    switch (satsys) {
+    switch (sysno) {
     case 0: *sys = SYS_GPS; break;
     case 1: *sys = SYS_GLO; break;
     case 2: *sys = SYS_SBS; break;
@@ -239,7 +239,7 @@ static int decode_track_stat(uint32_t stat, int* sys, int* code, int* plock, int
     case 5: *sys = SYS_QZS; break;
     case 6: *sys = SYS_IRN; break;
     default:
-        trace(2, "unicore unknown system: sys=%d\n", satsys);
+        trace(2, "unicore unknown system: sysno=%u\n", sysno);
         return -1;
     }
     if (!(*code = sig2code(*sys, sigtype, l2c)) || (idx = code2idx(*sys, *code)) < 0) {
@@ -817,14 +817,14 @@ static int decode_obsvmb(raw_t* raw)
             raw->obs.data[index].L[idx] = -adr;
             raw->obs.data[index].P[idx] = psr;
             raw->obs.data[index].D[idx] = (float)dop;
-            raw->obs.data[index].SNR[idx] = snr;
+            raw->obs.data[index].SNR[idx] = (float)snr;
             raw->obs.data[index].LLI[idx] = (uint8_t)lli;
             raw->obs.data[index].code[idx] = (uint8_t)code;
             if (rcvstds) {
                 double pstd = U2(p + 20) * 0.01;  // Meters
-                raw->obs.data[index].Pstd[idx] = pstd;
+                raw->obs.data[index].Pstd[idx] = (float)pstd;
                 double lstd = U2(p + 22) * 0.0001; // Cycles
-                raw->obs.data[index].Lstd[idx] = lstd;
+                raw->obs.data[index].Lstd[idx] = (float)lstd;
             }
         }
     }

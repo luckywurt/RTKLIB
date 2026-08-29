@@ -1599,14 +1599,14 @@ extern double str2num(const char *s, int i, int n)
 *          gtime_t *t       O   gtime_t struct
 * return : status (0:ok,0>:error)
 *-----------------------------------------------------------------------------*/
-extern int str2time(const char *s, int i, int n, gtime_t *t)
+extern int str2time(const char *s, size_t i, size_t n, gtime_t *t)
 {
-    double ep[6];
-    char str[256],*p=str;
+    char str[256];
 
-    if (i<0||(int)strlen(s)<i||(int)sizeof(str)-1<i) return -1;
-    for (s+=i;*s&&--n>=0;) *p++=*s++;
-    *p='\0';
+    if (i >= strlen(s) || n >= sizeof(str)) return -1;
+    for (size_t j = 0; j < n; j++) str[j] = s[i + j];
+    str[n] = '\0';
+    double ep[6];
     if (sscanf(str,"%lf %lf %lf %lf %lf %lf",ep,ep+1,ep+2,ep+3,ep+4,ep+5)<6)
         return -1;
     if (ep[0]<100.0) ep[0]+=ep[0]<80.0?2000.0:1900.0;
@@ -2043,7 +2043,8 @@ extern int adjgpsweek(int week)
 extern uint32_t tickget(void)
 {
 #ifdef WIN32
-    return (uint32_t)timeGetTime();
+    // To avoid needing all windows.h and lib WinMM for timeGetTime().
+    return (uint32_t)GetTickCount64();
 #else
     struct timespec tp={0};
     struct timeval  tv={0};
@@ -2700,33 +2701,45 @@ extern pcv_t *searchpcv(int sat, const char *type, gtime_t time,
 *-----------------------------------------------------------------------------*/
 extern void readpos(const char *file, const char *rcv, double *pos)
 {
-    static double poss[2048][3];
-    static char stas[2048][16];
-    FILE *fp;
-    int i,j,len,np=0;
-    char buff[256],str[256];
+  trace(3, "readpos: file=%s\n", file);
 
-    trace(3,"readpos: file=%s\n",file);
+  FILE *fp = fopen(file, "r");
+  if (fp == NULL) {
+    fprintf(stderr, "reference position file open error : %s\n", file);
+    return;
+  }
 
-    if (!(fp=fopen(file,"r"))) {
-        fprintf(stderr,"reference position file open error : %s\n",file);
-        return;
-    }
-    while (np<2048&&fgets(buff,sizeof(buff),fp)) {
-        if (buff[0]=='%'||buff[0]=='#') continue;
-        if (sscanf(buff,"%lf %lf %lf %255s",&poss[np][0],&poss[np][1],&poss[np][2],
-                   str)<4) continue;
-        sprintf(stas[np++],"%.15s",str);
-    }
+  size_t maxp = 2048;
+  double (*poss)[3] = malloc(maxp * sizeof(*poss));
+  char (*stas)[16] = malloc(maxp * sizeof(*stas));
+  if (poss == NULL || stas == NULL) {
+    trace(1, "readpos malloc error\n");
     fclose(fp);
-    len=(int)strlen(rcv);
-    for (i=0;i<np;i++) {
-        if (strncmp(stas[i],rcv,len)) continue;
-        for (j=0;j<3;j++) pos[j]=poss[i][j];
-        pos[0]*=D2R; pos[1]*=D2R;
-        return;
-    }
-    pos[0]=pos[1]=pos[2]=0.0;
+    goto done;
+  }
+
+  unsigned np = 0;
+  char buff[256];
+  while (np < maxp && fgets(buff, sizeof(buff), fp)) {
+    if (buff[0] == '%' || buff[0] == '#') continue;
+    char str[256];
+    if (sscanf(buff, "%lf %lf %lf %255s", &poss[np][0], &poss[np][1], &poss[np][2], str) < 4)
+      continue;
+    snprintf(stas[np++], sizeof(stas[0]), "%.15s", str);
+  }
+  fclose(fp);
+  size_t len = strlen(rcv);
+  for (unsigned i = 0; i < np; i++) {
+    if (strncmp(stas[i], rcv, len)) continue;
+    for (unsigned j = 0; j < 3; j++) pos[j] = poss[i][j];
+    pos[0] *= D2R;
+    pos[1] *= D2R;
+    goto done;
+  }
+  pos[0] = pos[1] = pos[2] = 0.0;
+done:
+  free(poss);
+  free(stas);
 }
 /* read blq record -----------------------------------------------------------*/
 static int readblqrecord(FILE *fp, double odisp[2][11][3])
