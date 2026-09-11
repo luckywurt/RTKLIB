@@ -1,0 +1,23 @@
+name: Deploy AI career resilience survey
+
+on:
+  push:
+    branches:
+      - ai-career-resilience-survey
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Deploy to ShipStatic
+        id: ship
+        uses: shipstatic/action@v1
+        with:
+          path: ./survey
+      - name: Show deployment URLs
+        run: |
+          echo "URL=${{ steps.ship.outputs.url }}"
+          echo "CLAIM=${{ steps.ship.outputs.claim }}"
